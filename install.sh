@@ -15,6 +15,9 @@ core_packages=(
   hyprland
   hyprshot
   hyprlock
+  awww
+  swayosd
+  wl_clipboard
   kitty
   rofi
   swaync
