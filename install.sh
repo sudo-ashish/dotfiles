@@ -9,7 +9,12 @@ IFS=$'\n\t'
 # Editable package and font definitions
 # -----------------------------------------------------------------------------
 core_packages=(
+  impala
+  bluetui
+  btop
   hyprland
+  hyprshot
+  hyprlock
   kitty
   rofi
   swaync
@@ -28,13 +33,19 @@ pacman_fonts=(
 # Font families used by the repository that are currently supplied through AUR.
 aur_fonts=(
   ttf-rubik-vf              # Rubik (waybar)
-  ttf-icomoon-feather       # feather / Icomoon Feather icons (rofi power menus)
   polycat                   # polycat (waybar runcat module font)
 )
 
 # Fontconfig family|download URL|repository files that use it.
 download_fonts=(
   'Deutschlander|https://dl.dafont.com/dl/?f=deutschlander|hypr/hyprlock.conf'
+)
+
+# Fontconfig family|repository fonts/ subpath|repository files that use it.
+# These font files ship inside this repository (fonts/) and are copied
+# directly to the user's local font directory — no download, no AUR.
+bundled_fonts=(
+  'feather|Icomoon-Feather.ttf|rofi/powermenu/type-1/style-*.rasi and type-2/style.rasi'
 )
 
 # Repository directory -> destination directory below ~/.config.  The zsh
@@ -209,9 +220,6 @@ aur_font_manual_note() {
     ttf-rubik-vf)
       printf '%s\n' 'Rubik (AUR package: ttf-rubik-vf) -> waybar/style.css'
       ;;
-    ttf-icomoon-feather)
-      printf '%s\n' 'Icomoon Feather (AUR package: ttf-icomoon-feather) -> rofi/powermenu/type-1/style-*.rasi and type-2/style.rasi'
-      ;;
     polycat)
       printf '%s\n' 'polycat (AUR package: polycat) -> waybar/style.css'
       ;;
@@ -316,6 +324,50 @@ install_downloaded_fonts() {
     fi
 
     if ! cp -- "${font_files[@]}" "${font_directory}/"; then
+      error "Failed to install ${family}."
+      manual_fonts_needed+=("${family} -> ${usage} (font copy failed)")
+      continue
+    fi
+
+    ok "Installed ${family} to ${font_directory}"
+    installed_any=true
+  done
+
+  if [[ ${installed_any} == true ]] && command -v fc-cache &>/dev/null; then
+    if ! fc-cache -f "${font_directory}"; then
+      warn "Failed to refresh the font cache for ${font_directory}."
+    fi
+  fi
+}
+
+install_bundled_fonts() {
+  local entry family filename usage font_directory source_file
+  local installed_any=false
+
+  ((${#bundled_fonts[@]})) || return 0
+
+  font_directory="${HOME}/.local/share/fonts"
+  for entry in "${bundled_fonts[@]}"; do
+    IFS='|' read -r family filename usage <<<"${entry}"
+    if font_family_available "${family}"; then
+      ok "${family} is available"
+      continue
+    fi
+
+    source_file="${SCRIPT_DIR}/fonts/${filename}"
+    if [[ ! -f ${source_file} ]]; then
+      error "Font file for ${family} is missing from the repository."
+      manual_fonts_needed+=("${family} -> ${usage} (font file missing from repo)")
+      continue
+    fi
+
+    if ! mkdir -p -- "${font_directory}"; then
+      error "Could not create ${font_directory}."
+      manual_fonts_needed+=("${family} -> ${usage} (font directory creation failed)")
+      continue
+    fi
+
+    if ! cp -- "${source_file}" "${font_directory}/"; then
       error "Failed to install ${family}."
       manual_fonts_needed+=("${family} -> ${usage} (font copy failed)")
       continue
@@ -548,6 +600,56 @@ install_dotfiles() {
   done
 }
 
+install_backgrounds() {
+  local source destination timestamp backup_root
+
+  heading 'Installing backgrounds'
+  if ! command -v xdg-user-dirs-update &>/dev/null; then
+    warn 'xdg-user-dirs-update is not installed; the Pictures directory location cannot be guaranteed.'
+  elif ! xdg-user-dirs-update; then
+    warn 'xdg-user-dirs-update failed; using ~/Pictures.'
+  fi
+
+  source="${SCRIPT_DIR}/Background"
+  destination="${HOME}/Pictures/Background"
+  if [[ ! -d ${source} ]]; then
+    skip 'Background directory not found'
+    return 0
+  fi
+
+  if directories_match "${source}" "${destination}"; then
+    ok "${destination} already matches the repository"
+    return 0
+  fi
+
+  if [[ -e ${destination} || -L ${destination} ]]; then
+    timestamp="$(date +%Y%m%d-%H%M%S)"
+    backup_root="${HOME}/Pictures/Background-backup-${timestamp}"
+    while [[ -e ${backup_root} || -L ${backup_root} ]]; do
+      timestamp="${timestamp}-1"
+      backup_root="${HOME}/Pictures/Background-backup-${timestamp}"
+    done
+
+    if ! mv -- "${destination}" "${backup_root}"; then
+      error "Could not move ${destination} to the backup folder."
+      return 1
+    fi
+    ok "Backed up existing Background folder to ${backup_root}"
+  fi
+
+  if ! mkdir -p -- "${HOME}/Pictures"; then
+    error "Could not create ${HOME}/Pictures."
+    return 1
+  fi
+
+  if ! cp -a -- "${source}/." "${destination}/"; then
+    error "Failed to install backgrounds to ${destination}."
+    return 1
+  fi
+
+  ok "Installed backgrounds to ${destination}"
+}
+
 summary_list() {
   local title=$1
   shift
@@ -606,7 +708,9 @@ main() {
   check_yay
   check_aur_fonts
   install_downloaded_fonts
+  install_bundled_fonts
   install_dotfiles || warn 'Dotfile installation encountered an error; some configs may not have been installed.'
+  install_backgrounds || warn 'Background installation encountered an error; backgrounds may not have been installed.'
   print_summary
   heading 'Restart Required'
   if confirm 'Restart the system now?'; then
