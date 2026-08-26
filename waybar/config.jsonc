@@ -1,0 +1,119 @@
+{
+  "layer": "top",
+  "spacing": 18,
+  "margin-top": 4,
+  "margin-right": 4,
+  "modules-right": [
+    "wlr/taskbar",
+  ],
+  "modules-center": [
+    "clock",
+    "hyprland/workspaces",
+    "custom/polycat",
+    "pulseaudio",
+    "bluetooth",
+    "network",
+    "battery",
+  ],
+
+  "clock": {
+    "interval": 60,
+    "format": "{:%H:%M}",
+    "tooltip-format": "<big>{:%Y %B}</big>\n<tt><small>{calendar}</small></tt>",
+  },
+
+  "hyprland/workspaces": {
+    "on-click": "activate",
+    "format": "{icon}",
+    "format-icons": {
+      "active": "",
+      "default": "",
+    },
+    "persistent-workspaces": {
+      "1": [],
+      "2": [],
+      "3": [],
+      "4": [],
+      "5": [],
+    },
+  },
+
+  "bluetooth": {
+    "format": "",
+    "format-off": "󰂲",
+    "format-disabled": "󰂲",
+    "format-connected": "󰂱",
+    "format-no-controller": "",
+    "tooltip-format": "Devices connected: {num_connections}",
+    "on-click": "~/.local/bin/floating-toggle-tui custom_tui_floating bluetui",
+  },
+
+  "pulseaudio": {
+    "format": "{icon} {volume}%",
+    "on-click": "pavucontrol",
+    "on-click-right": "pamixer -t",
+    "tooltip-format": "Playing at {volume}%",
+    "scroll-step": 5,
+    "format-muted": "",
+    "format-icons": {
+      "headphone": "",
+      "headset": "",
+      "default": ["", "", ""],
+    },
+  },
+
+  "network": {
+    "format": "{ifname}",
+    "format-wifi": "{icon}",
+    "format-icons": ["󰤯", "󰤟", "󰤢", "󰤥", "󰤨"],
+    "format-ethernet": "",
+    "format-disconnected": "󰤯",
+    "tooltip-format": "{ifname} via {gwaddr} 󰊗",
+    "tooltip-format-wifi": "{essid} ({signalStrength}%) ",
+    "tooltip-format-ethernet": "{ifname} ",
+    "tooltip-format-disconnected": "Disconnected",
+    "max-length": 50,
+    "on-click": "~/.local/bin/floating-toggle-tui custom_tui_floating impala",
+  },
+
+  "battery": {
+    "format": "{capacity}",
+    "format-icons": ["", "", "", "", ""],
+    "states": {
+      "warning": 30,
+      "critical": 15,
+    },
+    "on-click": "kitty --class btop -e btop",
+  },
+
+  "custom/polycat": {
+    "exec": "polycat",
+    "tail": true,
+    "format": "{}",
+  },
+
+  "wlr/taskbar": {
+    "all-outputs": false,
+    "format": "{icon}",
+    "icon-size": 20,
+    "icon-theme": "Numix-Circle",
+    "tooltip-format": "{title}",
+    "active-first": true,
+    "active-only": false,
+    "on-click": "activate",
+    "on-click-middle": "close",
+    "ignore-list": [
+        ""
+    ],
+    "squash-list": [
+      "kitty"
+    ],
+    "app_ids-mapping": {
+      "firefoxdeveloperedition": "firefox-developer-edition"
+    },
+    "rewrite": {
+      "Firefox Web Browser": "Firefox",
+      "Foot Server": "Terminal"
+    }
+  },
+}

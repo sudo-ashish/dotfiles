@@ -1,0 +1,198 @@
+/*****----- Configuration -----*****/
+configuration {
+    modi:                       "drun";
+    show-icons:                 true;
+    drun-display-format:        "{name}";
+    hover-select:               false;
+    me-select-entry:            "";
+    me-accept-entry:            "MousePrimary";
+}
+
+/*****----- Global Properties -----*****/
+@import                          "shared/colors.rasi"
+@import                          "shared/fonts.rasi"
+
+* {
+    border-colour:               var(selected);
+    handle-colour:               var(selected);
+    background-colour:           var(background);
+    foreground-colour:           var(foreground);
+    alternate-background:        var(background-alt);
+    normal-background:           var(background);
+    normal-foreground:           var(foreground);
+    urgent-background:           var(urgent);
+    urgent-foreground:           var(background);
+    active-background:           var(active);
+    active-foreground:           var(background);
+    selected-normal-background:  var(selected);
+    selected-normal-foreground:  var(background);
+    selected-urgent-background:  var(active);
+    selected-urgent-foreground:  var(background);
+    selected-active-background:  var(urgent);
+    selected-active-foreground:  var(background);
+    alternate-normal-background: var(background);
+    alternate-normal-foreground: var(foreground);
+    alternate-urgent-background: var(urgent);
+    alternate-urgent-foreground: var(background);
+    alternate-active-background: var(active);
+    alternate-active-foreground: var(background);
+}
+
+/*****----- Main Window -----*****/
+/*
+ * Style 1 — Left-docked vertical sidebar
+ * Slim frosted-glass strip flush against the left edge.
+ * Thumbnails stack one-per-row inside a 210px wide panel.
+ */
+window {
+    transparency:                "real";
+    location:                    west;
+    anchor:                      west;
+    fullscreen:                  false;
+    width:                       210px;
+    x-offset:                    0px;
+    y-offset:                    0px;
+
+    enabled:                     true;
+    margin:                      0px;
+    padding:                     0px;
+    border:                      0px 2px 0px 0px solid;
+    border-radius:               0px 12px 12px 0px;
+    border-color:                @border-colour;
+    cursor:                      "default";
+    background-color:            #1a1a1aCC;
+}
+
+/*****----- Main Box -----*****/
+mainbox {
+    enabled:                     true;
+    spacing:                     8px;
+    margin:                      0px;
+    padding:                     12px 10px;
+    border:                      0px solid;
+    border-radius:               0px;
+    border-color:                @border-colour;
+    background-color:            transparent;
+    children:                    [ "inputbar", "listview" ];
+}
+
+/*****----- Inputbar -----*****/
+inputbar {
+    enabled:                     true;
+    spacing:                     6px;
+    margin:                      0px 0px 4px 0px;
+    padding:                     8px 10px;
+    border:                      1px solid;
+    border-radius:               8px;
+    border-color:                #ffffff22;
+    background-color:            #ffffff0D;
+    text-color:                  @foreground-colour;
+    children:                    [ "textbox-prompt-colon", "entry" ];
+}
+
+prompt {
+    enabled:                     true;
+    background-color:            inherit;
+    text-color:                  inherit;
+}
+
+textbox-prompt-colon {
+    enabled:                     true;
+    padding:                     0px;
+    expand:                      false;
+    str:                         " ";
+    background-color:            inherit;
+    text-color:                  @border-colour;
+}
+
+entry {
+    enabled:                     true;
+    padding:                     0px;
+    background-color:            inherit;
+    text-color:                  inherit;
+    cursor:                      text;
+    placeholder:                 "Search...";
+    placeholder-color:           #ffffff55;
+}
+
+/*****----- Listview -----*****/
+listview {
+    enabled:                     true;
+    columns:                     1;
+    lines:                       6;
+    cycle:                       true;
+    dynamic:                     true;
+    scrollbar:                   true;
+    layout:                      vertical;
+    reverse:                     false;
+    fixed-height:                false;
+    fixed-columns:               true;
+
+    spacing:                     6px;
+    margin:                      0px;
+    padding:                     0px;
+    border:                      0px solid;
+    border-radius:               0px;
+    border-color:                @border-colour;
+    background-color:            transparent;
+    text-color:                  @foreground-colour;
+    cursor:                      "default";
+}
+
+scrollbar {
+    handle-width:                3px;
+    handle-color:                @border-colour;
+    border-radius:               6px;
+    background-color:            #ffffff11;
+}
+
+/*****----- Elements -----*****/
+element {
+    enabled:                     true;
+    orientation:                 vertical;
+    children:                    [ "element-icon" ];
+    spacing:                     0px;
+    margin:                      0px;
+    padding:                     4px;
+    border:                      1px solid;
+    border-radius:               8px;
+    border-color:                transparent;
+    background-color:            transparent;
+    text-color:                  @foreground-colour;
+    cursor:                      pointer;
+}
+
+element-icon {
+    background-color:            transparent;
+    text-color:                  inherit;
+    size:                        116px;
+    horizontal-align:            0.5;
+    cursor:                      inherit;
+}
+
+element normal.normal {
+    background-color:            #ffffff08;
+    border-color:                transparent;
+    text-color:                  var(normal-foreground);
+}
+
+element selected.normal {
+    background-color:            #83A59822;
+    border-color:                @border-colour;
+    text-color:                  var(selected-normal-foreground);
+}
+
+element alternate.normal {
+    background-color:            #ffffff05;
+    border-color:                transparent;
+    text-color:                  var(alternate-normal-foreground);
+}
+
+element-text {
+    background-color:            transparent;
+    text-color:                  inherit;
+    highlight:                   inherit;
+    cursor:                      inherit;
+    vertical-align:              0.5;
+    horizontal-align:            0.5;
+}
