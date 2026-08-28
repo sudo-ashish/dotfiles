@@ -3,7 +3,7 @@
 * {
   all: unset;
   font-family:
-    "Rubik", "JetBrainsMono Nerd Font Propo", "Noto Sans CJK JP", "polycat", "Noto Sans CJK KR";
+    "Rubik", "JetBrainsMono Nerd Font Propo", "Noto Sans CJK JP", "Noto Sans CJK KR";
 }
 
 tooltip {
@@ -112,9 +112,4 @@ battery.critical {
 
 #bluetooth {
   margin-right: 2px;
-}
-
-#custom-polycat {
-  font-size: 30px;
-  padding: 0 0px;
 }
