@@ -9,7 +9,6 @@
   "modules-center": [
     "clock",
     "hyprland/workspaces",
-    "custom/polycat",
     "pulseaudio",
     "bluetooth",
     "network",
@@ -86,11 +85,6 @@
     "on-click": "kitty --class btop -e btop",
   },
 
-  "custom/polycat": {
-    "exec": "polycat",
-    "tail": true,
-    "format": "{}",
-  },
 
   "wlr/taskbar": {
     "all-outputs": false,
