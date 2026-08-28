@@ -17,7 +17,7 @@ core_packages=(
   hyprlock
   awww
   swayosd
-  wl_clipboard
+  wl-clipboard
   kitty
   rofi
   swaync
