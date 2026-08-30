@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Define the directory containing wallpapers
-WALLPAPERS_DIR="$HOME/Pictures/Background"
+WALLPAPERS_DIR="$HOME/.config/themes/current/backgrounds/"
 LINK_DIR="$HOME/Pictures/Wallpaper"
 LINK_PATH="$LINK_DIR/default.png"
 

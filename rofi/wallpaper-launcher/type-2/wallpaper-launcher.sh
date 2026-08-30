@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-WALLPAPERS_DIR="$HOME/Pictures/Background"
+WALLPAPERS_DIR="$HOME/.config/themes/current/backgrounds/"
 LINK_DIR="$HOME/Pictures/Wallpaper"
 LINK_PATH="$LINK_DIR/default.png"
 TYPE_DIR="$HOME/.config/rofi/wallpaper-launcher/type-2"
