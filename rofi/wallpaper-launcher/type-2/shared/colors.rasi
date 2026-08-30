@@ -1,3 +1,1 @@
-/* Import color-scheme from `colors` directory */
-
-@import "~/.config/rofi/colors/gruvbox.rasi"
+@import "/home/pear/.config/themes/current/color.rasi"

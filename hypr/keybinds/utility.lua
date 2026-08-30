@@ -21,9 +21,6 @@ hl.bind(mainMod .. " + E", hl.dsp.exec_cmd(fileManager))
 hl.bind(mainMod .. " + N", hl.dsp.exec_cmd("swaync-client -t"))
 
 hl.bind("CTRL + SHIFT + R", hl.dsp.exec_cmd("~/.config/waybar/scripts/launch.sh"))
-hl.bind("ALT + SPACE", hl.dsp.exec_cmd("~/.config/rofi/launchers/type-3/launcher.sh"))
-hl.bind(mainMod .. " + ESCAPE", hl.dsp.exec_cmd("~/.config/rofi/powermenu/type-1/powermenu.sh"))
-hl.bind(mainMod .. " + SPACE", hl.dsp.exec_cmd("~/.config/rofi/wallpaper-launcher/type-2/wallpaper-launcher.sh"))
 hl.bind("PRINT", hl.dsp.exec_cmd("hyprshot -m region -o ~/Pictures/Screenshot -f myshot-$(date +%Y%m%d-%H%M%S).png"))
 hl.bind("SHIFT + PRINT", hl.dsp.exec_cmd("hyprshot -m region -o ~/Pictures/Screenshot -f temshot.png --clipboard-only"))
 

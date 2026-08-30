@@ -15,10 +15,17 @@ core_packages=(
   hyprland
   hyprshot
   hyprlock
+  qt5-wayland
+  qt6-wayland
+  polkit-kde-agent
+  xdg-desktop-portal-hyprland
+  xdg-desktop-portal-gtk
   awww
   swayosd
+  nautilus
   wl-clipboard
   kitty
+  neovim
   rofi
   brightnessctl
   jq
@@ -29,16 +36,15 @@ core_packages=(
 
 # Font families used by the repository and available from Arch's official repos.
 pacman_fonts=(
-  ttf-jetbrains-mono-nerd   # JetBrainsMono Nerd Font (kitty, hyprlock, rofi, swaync, waybar)
-  ttf-cascadia-code-nerd    # CaskaydiaCove Nerd Font (swaync)
-  ttf-iosevka-nerd          # Iosevka Nerd Font (rofi launcher type 2)
-  noto-fonts-cjk            # Noto Sans CJK JP/KR (waybar fallback)
+  ttf-jetbrains-mono-nerd # JetBrainsMono Nerd Font (kitty, hyprlock, rofi, swaync, waybar)
+  ttf-cascadia-code-nerd  # CaskaydiaCove Nerd Font (swaync)
+  ttf-iosevka-nerd        # Iosevka Nerd Font (rofi launcher type 2)
+  noto-fonts-cjk          # Noto Sans CJK JP/KR (waybar fallback)
 )
 
 # Font families used by the repository that are currently supplied through AUR.
 aur_fonts=(
-  ttf-rubik-vf              # Rubik (waybar)
-  polycat                   # polycat (waybar runcat module font)
+  ttf-rubik-vf # Rubik (waybar)
 )
 
 # Fontconfig family|download URL|repository files that use it.
@@ -96,11 +102,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-ok()    { printf '%s[OK]%s %s\n' "${C_OK}" "${C_RESET}" "$*"; }
-info()  { printf '%s[INFO]%s %s\n' "${C_INFO}" "${C_RESET}" "$*"; }
-warn()  { printf '%s[WARN]%s %s\n' "${C_WARN}" "${C_RESET}" "$*" >&2; }
+ok() { printf '%s[OK]%s %s\n' "${C_OK}" "${C_RESET}" "$*"; }
+info() { printf '%s[INFO]%s %s\n' "${C_INFO}" "${C_RESET}" "$*"; }
+warn() { printf '%s[WARN]%s %s\n' "${C_WARN}" "${C_RESET}" "$*" >&2; }
 error() { printf '%s[ERROR]%s %s\n' "${C_ERROR}" "${C_RESET}" "$*" >&2; }
-skip()  { printf '[SKIP] %s\n' "$*"; }
+skip() { printf '[SKIP] %s\n' "$*"; }
 heading() { printf '\n==> %s\n' "$*"; }
 
 is_installed() {
@@ -120,9 +126,27 @@ confirm() {
     fi
 
     case ${answer,,} in
-      ''|y|yes) return 0 ;;
+    '' | y | yes) return 0 ;;
+    n | no) return 1 ;;
+    *) warn 'Please answer yes or no.' ;;
+    esac
+  done
+}
+
+confirm_strict() {
+  local prompt=$1 answer
+
+  while true; do
+    printf '%s [y/n]: ' "${prompt}"
+    if ! IFS= read -r answer; then
+      printf '\n'
+      return 1
+    fi
+
+    case ${answer,,} in
+      y|yes) return 0 ;;
       n|no) return 1 ;;
-      *) warn 'Please answer yes or no.' ;;
+      *) warn 'Please answer y or n.' ;;
     esac
   done
 }
@@ -222,15 +246,12 @@ install_aur_packages() {
 
 aur_font_manual_note() {
   case $1 in
-    ttf-rubik-vf)
-      printf '%s\n' 'Rubik (AUR package: ttf-rubik-vf) -> waybar/style.css'
-      ;;
-    polycat)
-      printf '%s\n' 'polycat (AUR package: polycat) -> waybar/style.css'
-      ;;
-    *)
-      printf '%s\n' "$1 (AUR package)"
-      ;;
+  ttf-rubik-vf)
+    printf '%s\n' 'Rubik (AUR package: ttf-rubik-vf) -> waybar/style.css'
+    ;;
+  *)
+    printf '%s\n' "$1 (AUR package)"
+    ;;
   esac
 }
 
@@ -394,6 +415,27 @@ directories_match() {
   [[ -d ${destination} ]] && diff -qr -- "${source}" "${destination}" &>/dev/null
 }
 
+source_tree_matches() {
+  local source_root=$1 destination_root=$2 source_path relative destination_path
+
+  [[ -d ${destination_root} ]] || return 1
+  while IFS= read -r -d '' source_path; do
+    relative=${source_path#"${source_root}/"}
+    destination_path="${destination_root}/${relative}"
+    if [[ -L ${source_path} ]]; then
+      [[ -L ${destination_path} ]] || return 1
+      [[ $(readlink -- "${source_path}") == $(readlink -- "${destination_path}") ]] || return 1
+    elif [[ -d ${source_path} ]]; then
+      [[ -d ${destination_path} && ! -L ${destination_path} ]] || return 1
+    elif [[ -f ${source_path} ]]; then
+      [[ -f ${destination_path} && ! -L ${destination_path} ]] || return 1
+      cmp -s -- "${source_path}" "${destination_path}" || return 1
+    else
+      return 1
+    fi
+  done < <(find "${source_root}" -mindepth 1 -print0)
+}
+
 check_core_packages() {
   local package
   local -a missing=()
@@ -416,16 +458,11 @@ check_core_packages() {
 
   printf 'The following packages are missing:\n'
   print_items "${missing[@]}"
-  if confirm 'Install missing packages?'; then
-    if install_pacman_packages 'required applications' "${missing[@]}"; then
-      apps_installed+=("${missing[@]}")
-    else
-      apps_skipped+=("${missing[@]}")
-      return 1
-    fi
+  if install_pacman_packages 'required applications' "${missing[@]}"; then
+    apps_installed+=("${missing[@]}")
   else
-    warn 'Application installation declined; continuing with the installer.'
     apps_skipped+=("${missing[@]}")
+    return 1
   fi
 }
 
@@ -451,14 +488,10 @@ check_pacman_fonts() {
 
   info 'The following official repository fonts are missing:'
   print_items "${missing[@]}"
-  if confirm 'Install missing fonts?'; then
-    if install_pacman_packages 'official repository fonts' "${missing[@]}"; then
-      fonts_pacman_installed+=("${missing[@]}")
-    else
-      warn 'Skipping the remaining official-font installation after the failure.'
-    fi
+  if install_pacman_packages 'official repository fonts' "${missing[@]}"; then
+    fonts_pacman_installed+=("${missing[@]}")
   else
-    warn 'Official-font installation declined.'
+    warn 'Skipping the remaining official-font installation after the failure.'
   fi
 }
 
@@ -471,14 +504,10 @@ check_yay() {
   fi
 
   printf 'yay is not installed.\n'
-  if confirm 'Install yay?'; then
-    if install_yay; then
-      yay_available=true
-    else
-      warn 'yay installation failed; AUR packages will be listed for manual installation if needed.'
-    fi
+  if install_yay; then
+    yay_available=true
   else
-    warn 'yay installation declined; AUR packages will be listed for manual installation if needed.'
+    warn 'yay installation failed; AUR packages will be listed for manual installation if needed.'
   fi
 }
 
@@ -514,6 +543,28 @@ check_aur_fonts() {
     warn 'AUR font installation failed; install these packages manually.'
     mark_aur_fonts_manual "${missing[@]}"
   fi
+}
+
+setup_sddm() {
+  heading 'Display Manager'
+  if ! confirm_strict 'Install and enable sddm as your display manager?'; then
+    info 'sddm setup was skipped.'
+    return 0
+  fi
+
+  if ! is_installed sddm; then
+    if ! install_pacman_packages 'sddm' sddm; then
+      error 'sddm installation failed; it was not enabled.'
+      return 1
+    fi
+  fi
+
+  if ! sudo systemctl enable sddm; then
+    error 'Failed to enable sddm.'
+    return 1
+  fi
+
+  ok 'sddm is enabled.'
 }
 
 install_dotfiles() {
@@ -556,14 +607,6 @@ install_dotfiles() {
     printf 'Existing differing configs will be moved to one backup folder before installation.\n'
   fi
 
-  if ! confirm 'Move existing configs to backup (when present) and install all listed configs?'; then
-    warn 'Dotfile installation declined; no configuration was changed.'
-    for index in "${pending_indices[@]}"; do
-      configs_skipped+=("${config_destinations[index]} (installation declined)")
-    done
-    return 0
-  fi
-
   if ((${#backup_indices[@]})); then
     timestamp="$(date +%Y%m%d-%H%M%S)"
     backup_root="${HOME}/.config/dotfile-backup-${timestamp}"
@@ -603,6 +646,147 @@ install_dotfiles() {
     ok "Installed ${label} config to ${destination}"
     configs_installed+=("${label}")
   done
+}
+
+ensure_local_bin_path() {
+  local path_rule='export PATH="$HOME/.local/bin:$PATH"'
+  local shell_file shell_tmp first_line match_count timestamp backup
+
+  for shell_file in "${HOME}/.bashrc" "${HOME}/.zshrc"; do
+    if [[ -e ${shell_file} || -L ${shell_file} ]]; then
+      if [[ ! -f ${shell_file} ]]; then
+        error "Cannot update PATH because ${shell_file} is not a regular file."
+        return 1
+      fi
+      first_line=''
+      IFS= read -r first_line <"${shell_file}" || true
+      match_count="$(grep -Fxc -- "${path_rule}" "${shell_file}" || true)"
+      if [[ ${first_line} == "${path_rule}" && ${match_count} -eq 1 ]]; then
+        ok "${shell_file} already adds ~/.local/bin to PATH at the top"
+        continue
+      fi
+      timestamp="$(date +%Y%m%d-%H%M%S)"
+      backup="${shell_file}.bak.${timestamp}"
+      while [[ -e ${backup} || -L ${backup} ]]; do
+        timestamp="${timestamp}-1"
+        backup="${shell_file}.bak.${timestamp}"
+      done
+      if ! cp -aT -- "${shell_file}" "${backup}"; then
+        error "Could not back up ${shell_file}."
+        return 1
+      fi
+      backups_created+=("${backup}")
+      if ! shell_tmp="$(mktemp "${shell_file}.tmp.XXXXXX")"; then
+        error "Could not stage the PATH update for ${shell_file}."
+        return 1
+      fi
+      if ! printf '%s\n' "${path_rule}" >"${shell_tmp}"; then
+        rm -f -- "${shell_tmp}"
+        error "Could not stage the PATH rule for ${shell_file}."
+        return 1
+      fi
+      grep -Fvx -- "${path_rule}" "${shell_file}" >>"${shell_tmp}" || true
+      if ! command cat -- "${shell_tmp}" >"${shell_file}"; then
+        rm -f -- "${shell_tmp}"
+        error "Could not add ~/.local/bin to PATH in ${shell_file}."
+        return 1
+      fi
+      rm -f -- "${shell_tmp}"
+    elif ! printf '%s\n' "${path_rule}" >"${shell_file}"; then
+      error "Could not create ${shell_file}."
+      return 1
+    fi
+    ok "Added ~/.local/bin to PATH at the top of ${shell_file}"
+  done
+}
+
+install_theme_switcher() {
+  local themes_source="${SCRIPT_DIR}/themes"
+  local themes_destination="${HOME}/.config/themes"
+  local bin_source="${SCRIPT_DIR}/bin"
+  local bin_destination="${HOME}/.local/bin"
+  local setup_script="${HOME}/.local/bin/theme-switch-setup"
+  local script_name source destination script_tmp timestamp backup
+  local -a scripts=(theme-switch theme-switch-setup)
+
+  heading 'Installing theme switcher'
+  if [[ ! -d ${themes_source} ]]; then
+    error "Theme source directory is missing: ${themes_source}"
+    return 1
+  fi
+  for script_name in "${scripts[@]}"; do
+    if [[ ! -f ${bin_source}/${script_name} ]]; then
+      error "Theme-switcher script is missing: ${bin_source}/${script_name}"
+      return 1
+    fi
+  done
+
+  if source_tree_matches "${themes_source}" "${themes_destination}"; then
+    ok "${themes_destination} already contains the repository themes"
+    configs_present+=(themes)
+  else
+    if [[ -e ${themes_destination} || -L ${themes_destination} ]]; then
+      if [[ ! -d ${themes_destination} || -L ${themes_destination} ]]; then
+        error "Cannot install themes because ${themes_destination} is not a directory."
+        return 1
+      fi
+      timestamp="$(date +%Y%m%d-%H%M%S)"
+      backup="${themes_destination}.bak.${timestamp}"
+      while [[ -e ${backup} || -L ${backup} ]]; do
+        timestamp="${timestamp}-1"
+        backup="${themes_destination}.bak.${timestamp}"
+      done
+      if ! cp -aT -- "${themes_destination}" "${backup}"; then
+        error "Could not back up ${themes_destination}."
+        return 1
+      fi
+      backups_created+=("${backup}")
+      configs_backed_up+=(themes)
+    elif ! mkdir -p -- "${themes_destination}"; then
+      error "Could not create ${themes_destination}."
+      return 1
+    fi
+
+    if ! cp -a -- "${themes_source}/." "${themes_destination}/"; then
+      error "Failed to copy themes to ${themes_destination}."
+      return 1
+    fi
+    ok "Installed themes to ${themes_destination}"
+    configs_installed+=(themes)
+  fi
+
+  if ! mkdir -p -- "${bin_destination}"; then
+    error "Could not create ${bin_destination}."
+    return 1
+  fi
+  for script_name in "${scripts[@]}"; do
+    source="${bin_source}/${script_name}"
+    destination="${bin_destination}/${script_name}"
+    if [[ -f ${destination} && ! -L ${destination} && -x ${destination} ]] &&
+      cmp -s -- "${source}" "${destination}"; then
+      ok "${destination} already matches the repository"
+      continue
+    fi
+
+    if ! script_tmp="$(mktemp "${bin_destination}/.${script_name}.XXXXXX")"; then
+      error "Could not stage ${destination}."
+      return 1
+    fi
+    if ! cp -aT -- "${source}" "${script_tmp}" ||
+      ! mv -fT -- "${script_tmp}" "${destination}"; then
+      rm -f -- "${script_tmp}"
+      error "Failed to install ${destination}."
+      return 1
+    fi
+    ok "Installed ${destination}"
+  done
+
+  ensure_local_bin_path || return 1
+  if ! "${setup_script}"; then
+    error 'Theme-switcher initial setup failed.'
+    return 1
+  fi
+  ok 'Theme-switcher initial setup completed.'
 }
 
 install_backgrounds() {
@@ -712,9 +896,11 @@ main() {
   check_pacman_fonts
   check_yay
   check_aur_fonts
+  setup_sddm || warn 'sddm setup encountered an error; sddm may not be enabled.'
   install_downloaded_fonts
   install_bundled_fonts
   install_dotfiles || warn 'Dotfile installation encountered an error; some configs may not have been installed.'
+  install_theme_switcher || warn 'Theme-switcher installation or initial setup encountered an error.'
   install_backgrounds || warn 'Background installation encountered an error; backgrounds may not have been installed.'
   print_summary
   heading 'Restart Required'

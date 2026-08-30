@@ -1,0 +1,363 @@
+#!/usr/bin/env bash
+
+set -u
+set -o pipefail
+
+readonly APP_TITLE="Theme Switcher"
+readonly CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+readonly THEMES_DIR="$CONFIG_HOME/themes"
+readonly CURRENT_LINK="$THEMES_DIR/current"
+readonly SETUP_SCRIPT="$HOME/.local/bin/theme-switch-setup"
+
+emit_notification() {
+    local urgency="$1"
+    shift
+    if command -v notify-send >/dev/null 2>&1; then
+        notify-send --urgency="$urgency" "$APP_TITLE" "$*" >/dev/null 2>&1 || true
+    fi
+}
+
+warn() {
+    printf 'warning: %s\n' "$*" >&2
+    emit_notification normal "warning: $*"
+}
+
+error() {
+    printf 'error: %s\n' "$*" >&2
+    emit_notification critical "error: $*"
+}
+
+die() {
+    local status="$1"
+    shift
+    error "$*"
+    exit "$status"
+}
+
+TMPDIR="$(mktemp -d "$CONFIG_HOME/.theme-switch.XXXXXX")" || {
+    error "could not create a temporary directory"
+    exit 1
+}
+trap 'rm -rf "$TMPDIR"' EXIT
+
+if (( $# != 1 )); then
+    error "usage: theme-switch THEME"
+    exit 2
+fi
+
+theme_name="$1"
+if [[ -z "$theme_name" || "$theme_name" == .* || "$theme_name" == *"/"* ||
+      "$theme_name" == *".."* || ! "$theme_name" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+    die 2 "invalid theme name '$theme_name' (allowed: letters, numbers, _ and -)"
+fi
+
+theme_dir="$THEMES_DIR/$theme_name"
+if [[ ! -d "$theme_dir" ]]; then
+    available=""
+    if [[ -d "$THEMES_DIR" ]]; then
+        shopt -s nullglob
+        for directory in "$THEMES_DIR"/*; do
+            [[ -d "$directory" && ! -L "$directory" ]] || continue
+            available+="${directory##*/}, "
+        done
+        shopt -u nullglob
+        available="${available%, }"
+    fi
+    [[ -n "$available" ]] || available="none"
+    die 1 "unknown theme '$theme_name'; available themes: $available"
+fi
+
+required_theme_files=(waybar.css btop.theme neovim.lua vscode.json)
+missing_theme_files=()
+for required_file in "${required_theme_files[@]}"; do
+    [[ -f "$theme_dir/$required_file" ]] || missing_theme_files+=("$required_file")
+done
+if (( ${#missing_theme_files[@]} > 0 )); then
+    printf -v missing_list '%s, ' "${missing_theme_files[@]}"
+    missing_list="${missing_list%, }"
+    die 1 "theme '$theme_name' is incomplete: missing $missing_list"
+fi
+
+require_command() {
+    command -v "$1" >/dev/null 2>&1 ||
+        die 1 "missing runtime dependency '$1'; run theme-switch-setup"
+}
+
+setup_is_complete() {
+    local btop_link="$CONFIG_HOME/btop/themes/current.theme"
+    local btop_target="$CURRENT_LINK/btop.theme"
+    local btop_conf="$CONFIG_HOME/btop/btop.conf"
+    local nvim_loader="$CONFIG_HOME/nvim/lua/plugins/theme.lua"
+    local nvim_lazy_config="$CONFIG_HOME/nvim/lua/config/lazy.lua"
+
+    [[ -L "$btop_link" && "$(readlink "$btop_link")" == "$btop_target" ]] || return 1
+    [[ -f "$btop_conf" ]] && grep -Eq '^[[:space:]]*color_theme[[:space:]]*=[[:space:]]*"current"[[:space:]]*$' "$btop_conf" || return 1
+    [[ -f "$nvim_loader" ]] && grep -Fq '~/.config/themes/current/neovim.lua' "$nvim_loader" || return 1
+    [[ -f "$nvim_lazy_config" ]] && grep -Eq "import[[:space:]]*=[[:space:]]*['\\\"]plugins['\\\"]" "$nvim_lazy_config" || return 1
+}
+
+if ! setup_is_complete; then
+    [[ -x "$SETUP_SCRIPT" ]] ||
+        die 1 "setup is incomplete and '$SETUP_SCRIPT' is not executable"
+    printf 'Theme integration is not configured; running theme-switch-setup.\n'
+    "$SETUP_SCRIPT" || die 1 "automatic theme-switch setup failed"
+    setup_is_complete || die 1 "theme integration is still incomplete after setup"
+fi
+
+# Runtime dependencies are installed by theme-switch-setup. The switch command
+# only checks them so its hot path never invokes a package manager.
+require_command flock
+lock_file="${XDG_RUNTIME_DIR:-/tmp}/theme-switch.lock"
+exec 9>"$lock_file" || die 1 "cannot open lock file '$lock_file'"
+flock -n 9 || die 1 "another theme-switch operation is already running"
+
+require_command jq
+
+vscode_metadata="$(
+    jq -er '
+        if ((.name | type) == "string" and (.name | length) > 0)
+           and ((.extension | type) == "string" and (.extension | length) > 0)
+        then [.name, .extension] | @tsv
+        else error("invalid VS Code theme metadata")
+        end
+    ' "$theme_dir/vscode.json"
+)" || die 1 "vscode.json has an invalid or missing name/extension"
+IFS=$'\t' read -r vscode_theme_name vscode_extension <<< "$vscode_metadata"
+
+new_theme_resolved="$(readlink -f "$theme_dir")" || die 1 "cannot resolve selected theme"
+current_link_existed=0
+old_current_target=""
+old_current_resolved=""
+if [[ -L "$CURRENT_LINK" ]]; then
+    current_link_existed=1
+    old_current_target="$(readlink "$CURRENT_LINK")" ||
+        die 1 "cannot read active theme symlink"
+    old_current_resolved="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
+elif [[ -e "$CURRENT_LINK" ]]; then
+    die 1 "'$CURRENT_LINK' exists but is not a symlink"
+fi
+
+theme_changed=1
+if (( current_link_existed == 1 )) &&
+   [[ "$old_current_resolved" == "$new_theme_resolved" ]]; then
+    theme_changed=0
+fi
+
+declare -a settings_destinations=()
+declare -a settings_temps=()
+detected_editor_count=0
+
+extension_is_installed() {
+    local editor_bin="$1"
+    local extension_registry="" extensions
+
+    case "$editor_bin" in
+        codium) extension_registry="$HOME/.vscode-oss/extensions/extensions.json" ;;
+        code) extension_registry="$HOME/.vscode/extensions/extensions.json" ;;
+    esac
+
+    # The on-disk registry is effectively instant. Keep the official CLI as a
+    # fallback for custom extension directories, profiles, or malformed state.
+    if [[ -f "$extension_registry" ]] &&
+       jq -e --arg id "$vscode_extension" \
+          'type == "array" and any(.[];
+             ((.identifier.id? // "") | ascii_downcase)
+             == ($id | ascii_downcase))' \
+          "$extension_registry" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    extensions="$("$editor_bin" --list-extensions 2>/dev/null)" || return 1
+    grep -Fxiq "$vscode_extension" <<< "$extensions"
+}
+
+prepare_editor_settings() {
+    local editor_bin="$1"
+    local settings_path="$2"
+    local source_json="$settings_path"
+    local settings_tmp="$TMPDIR/settings-${#settings_temps[@]}.json"
+
+    ((detected_editor_count += 1))
+    if [[ -e "$settings_path" ]]; then
+        if [[ ! -f "$settings_path" ]] || ! jq empty "$settings_path" >/dev/null 2>&1; then
+            warn "$editor_bin settings are not strict JSON; skipping '$settings_path'"
+            return 0
+        fi
+
+        # A same-theme invocation is a no-op when this editor is already clean.
+        # Avoid starting Electron just to list extensions in that common case.
+        if (( theme_changed == 0 )) &&
+           jq -e --arg theme "$vscode_theme_name" \
+               '."workbench.colorTheme" == $theme
+                and (has("workbench.colorCustomizations") | not)
+                and (has("editor.tokenColorCustomizations") | not)' \
+               "$settings_path" >/dev/null 2>&1; then
+            return 0
+        fi
+    else
+        source_json="$TMPDIR/empty-settings-${#settings_temps[@]}.json"
+        printf '{}\n' > "$source_json" || die 1 "failed to prepare settings for $editor_bin"
+    fi
+
+    if ! extension_is_installed "$editor_bin"; then
+        "$editor_bin" --install-extension "$vscode_extension" >/dev/null 2>&1 || true
+        if ! extension_is_installed "$editor_bin"; then
+            warn "extension '$vscode_extension' is unavailable for $editor_bin; leaving its workbench.colorTheme unchanged"
+            return 0
+        fi
+    fi
+
+    jq --arg theme "$vscode_theme_name" \
+        '."workbench.colorTheme" = $theme
+         | del(."workbench.colorCustomizations", ."editor.tokenColorCustomizations")' \
+        "$source_json" > "$settings_tmp" || die 1 "failed to generate settings for $editor_bin"
+    jq empty "$settings_tmp" >/dev/null 2>&1 || die 1 "generated settings for $editor_bin failed validation"
+    if [[ -f "$settings_path" ]] && cmp -s -- "$settings_tmp" "$settings_path"; then
+        return 0
+    fi
+    settings_destinations+=("$settings_path")
+    settings_temps+=("$settings_tmp")
+}
+
+if command -v codium >/dev/null 2>&1; then
+    prepare_editor_settings codium "$CONFIG_HOME/VSCodium/User/settings.json"
+fi
+if command -v code >/dev/null 2>&1; then
+    code_settings="$CONFIG_HOME/Code/User/settings.json"
+    if [[ ! -e "$code_settings" ]]; then
+        code_settings="$CONFIG_HOME/Code - OSS/User/settings.json"
+    fi
+    prepare_editor_settings code "$code_settings"
+fi
+if (( detected_editor_count == 0 )); then
+    warn "neither codium nor code is installed; editor theme update skipped"
+fi
+
+# A manual per-theme kitty color file is optional. When present, stage a symlink
+# so replacing ~/.config/kitty/color.conf is atomic and can be rolled back.
+kitty_theme_file="$theme_dir/color.conf"
+kitty_link_tmp=""
+if [[ -f "$kitty_theme_file" ]]; then
+    if [[ ! -L "$CONFIG_HOME/kitty/color.conf" ]] ||
+       [[ "$(readlink "$CONFIG_HOME/kitty/color.conf")" != "$kitty_theme_file" ]]; then
+        kitty_link_tmp="$TMPDIR/kitty-color.conf"
+        ln -s -- "$kitty_theme_file" "$kitty_link_tmp" ||
+            die 1 "failed to stage kitty color symlink"
+    fi
+else
+    warn "theme '$theme_name' has no manual color.conf; kitty colors unchanged"
+fi
+
+# Editor JSON is committed first, then the optional kitty symlink, and finally
+# the active-theme symlink. Manual Waybar and kitty files are never overwritten.
+declare -a commit_destinations=("${settings_destinations[@]}")
+declare -a commit_temps=("${settings_temps[@]}")
+if [[ -n "$kitty_link_tmp" ]]; then
+    commit_destinations+=("$CONFIG_HOME/kitty/color.conf")
+    commit_temps+=("$kitty_link_tmp")
+fi
+
+if (( theme_changed == 0 && ${#commit_destinations[@]} == 0 )); then
+    printf 'Theme `%s` is already active; nothing to do.\n' "$theme_name"
+    exit 0
+fi
+
+declare -a commit_existed=()
+declare -a commit_backups=()
+for index in "${!commit_destinations[@]}"; do
+    destination="${commit_destinations[$index]}"
+    backup="$TMPDIR/rollback-$index"
+    if [[ -e "$destination" || -L "$destination" ]]; then
+        cp -aT -- "$destination" "$backup" || die 1 "could not stage rollback data for '$destination'"
+        commit_existed+=(1)
+    else
+        commit_existed+=(0)
+    fi
+    commit_backups+=("$backup")
+done
+
+committed_count=0
+rollback_commit() {
+    local rollback_index
+    for ((rollback_index = committed_count - 1; rollback_index >= 0; rollback_index--)); do
+        if [[ "${commit_existed[$rollback_index]}" -eq 1 ]]; then
+            cp -afT -- "${commit_backups[$rollback_index]}" "${commit_destinations[$rollback_index]}" || true
+        else
+            rm -f -- "${commit_destinations[$rollback_index]}" || true
+        fi
+    done
+    if (( current_link_existed == 1 )); then
+        ln -sfnT -- "$old_current_target" "$CURRENT_LINK" >/dev/null 2>&1 || true
+    else
+        rm -f -- "$CURRENT_LINK" >/dev/null 2>&1 || true
+    fi
+}
+
+for index in "${!commit_destinations[@]}"; do
+    destination="${commit_destinations[$index]}"
+    if ! mkdir -p "${destination%/*}" || ! mv -f -- "${commit_temps[$index]}" "$destination"; then
+        rollback_commit
+        die 1 "commit failed at '$destination'; previous files were restored"
+    fi
+    ((committed_count += 1))
+done
+
+if (( theme_changed == 1 )) && ! ln -sfnT -- "$theme_dir" "$CURRENT_LINK"; then
+    rollback_commit
+    die 1 "could not repoint active theme; previous files were restored"
+fi
+
+# Replacing a symlink is not reliably noticed by kitty's config watcher. Kitty
+# officially supports SIGUSR1 for reloading kitty.conf and all included files.
+if [[ -n "$kitty_link_tmp" ]]; then
+    kitty_reloaded=0
+    if pgrep -x kitty >/dev/null 2>&1 && pkill -SIGUSR1 kitty; then
+        kitty_reloaded=1
+    elif [[ "${KITTY_PID:-}" =~ ^[0-9]+$ ]] && kill -0 "$KITTY_PID" 2>/dev/null &&
+         kill -SIGUSR1 "$KITTY_PID"; then
+        kitty_reloaded=1
+    fi
+    if (( kitty_reloaded == 0 )); then
+        warn "kitty is not running or could not be signalled; reload skipped"
+    fi
+fi
+
+if (( theme_changed == 1 )); then
+    backgrounds_dir="$CURRENT_LINK/backgrounds"
+    first_wallpaper=""
+    if [[ -d "$backgrounds_dir" ]]; then
+        shopt -s nullglob
+        for wallpaper_candidate in "$backgrounds_dir"/*; do
+            [[ -f "$wallpaper_candidate" ]] || continue
+            case "${wallpaper_candidate,,}" in
+                *.png|*.jpg|*.jpeg|*.webp|*.gif|*.bmp|*.avif)
+                    first_wallpaper="$wallpaper_candidate"
+                    break
+                    ;;
+            esac
+        done
+        shopt -u nullglob
+    fi
+
+    if [[ -z "$first_wallpaper" ]]; then
+        warn "theme '$theme_name' has no wallpaper in backgrounds; wallpaper unchanged"
+    elif ! command -v awww >/dev/null 2>&1; then
+        warn "awww is not installed; wallpaper unchanged"
+    elif awww img "$first_wallpaper" >/dev/null 2>&1; then
+        printf 'Wallpaper changed to `%s`.\n' "${first_wallpaper##*/}"
+    else
+        warn "awww could not set '${first_wallpaper##*/}'; is awww-daemon running?"
+    fi
+fi
+
+if (( theme_changed == 1 )); then
+    if pgrep -x waybar >/dev/null 2>&1; then
+        if ! pkill -SIGUSR2 waybar; then
+            warn "Waybar is running but could not be signalled"
+        fi
+    else
+        warn "Waybar is not running; reload skipped"
+    fi
+fi
+
+printf 'Theme switched to `%s`. Restart btop/Neovim sessions to pick it up.\n' "$theme_name"

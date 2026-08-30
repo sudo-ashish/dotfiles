@@ -1,0 +1,319 @@
+#!/usr/bin/env bash
+
+set -u
+set -o pipefail
+
+readonly APP_TITLE="Theme Switcher Setup"
+readonly CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+readonly THEMES_DIR="$CONFIG_HOME/themes"
+readonly CURRENT_LINK="$THEMES_DIR/current"
+readonly SWITCH_SCRIPT="$HOME/.local/bin/theme-switch"
+readonly SETUP_SCRIPT="$HOME/.local/bin/theme-switch-setup"
+
+emit_notification() {
+    local urgency="$1"
+    shift
+    if command -v notify-send >/dev/null 2>&1; then
+        notify-send --urgency="$urgency" "$APP_TITLE" "$*" >/dev/null 2>&1 || true
+    fi
+}
+
+warn() {
+    printf 'warning: %s\n' "$*" >&2
+    emit_notification normal "warning: $*"
+}
+
+error() {
+    printf 'error: %s\n' "$*" >&2
+    emit_notification critical "error: $*"
+}
+
+die() {
+    local status="$1"
+    shift
+    error "$*"
+    exit "$status"
+}
+
+TMPDIR="$(mktemp -d "$CONFIG_HOME/.theme-switch-setup.XXXXXX")" || {
+    error "could not create a temporary directory"
+    exit 1
+}
+trap 'rm -rf "$TMPDIR"' EXIT
+
+if (( $# != 0 )); then
+    error "usage: theme-switch-setup"
+    exit 2
+fi
+
+install_dependency() {
+    local command_name="$1"
+    local package_name="$2"
+
+    command -v "$command_name" >/dev/null 2>&1 && return 0
+    if ! command -v sudo >/dev/null 2>&1 || ! command -v pacman >/dev/null 2>&1; then
+        die 1 "missing dependency '$command_name' and sudo/pacman is unavailable"
+    fi
+    sudo pacman -S --needed --noconfirm "$package_name" >/dev/null ||
+        die 1 "failed to install dependency '$package_name'"
+    command -v "$command_name" >/dev/null 2>&1 ||
+        die 1 "dependency '$command_name' is still unavailable after installing '$package_name'"
+}
+
+install_dependency flock util-linux
+install_dependency jq jq
+lock_file="${XDG_RUNTIME_DIR:-/tmp}/theme-switch.lock"
+exec 9>"$lock_file" || die 1 "cannot open lock file '$lock_file'"
+flock -n 9 || die 1 "another theme-switch operation is already running"
+
+snapshot_symlink() {
+    local path="$1"
+    if [[ -L "$path" ]]; then
+        printf 'symlink:%s' "$(readlink "$path")"
+    elif [[ -e "$path" ]]; then
+        printf 'not-a-symlink'
+    else
+        printf 'missing'
+    fi
+}
+
+snapshot_file() {
+    local path="$1"
+    local checksum ignored
+    if [[ -f "$path" ]]; then
+        read -r checksum ignored < <(sha256sum -- "$path") || return 1
+        printf 'file:%s' "$checksum"
+    elif [[ -e "$path" || -L "$path" ]]; then
+        printf 'not-a-regular-file'
+    else
+        printf 'missing'
+    fi
+}
+
+active_theme_before="$(snapshot_symlink "$CURRENT_LINK")"
+editor_paths=(
+    "$CONFIG_HOME/VSCodium/User/settings.json"
+    "$CONFIG_HOME/Code/User/settings.json"
+    "$CONFIG_HOME/Code - OSS/User/settings.json"
+)
+declare -a editor_before=()
+for editor_path in "${editor_paths[@]}"; do
+    editor_before+=("$(snapshot_file "$editor_path")")
+done
+
+declare -a created_files=()
+declare -a modified_files=()
+declare -a backup_files=()
+declare -a unchanged_components=()
+
+latest_backup() {
+    local file="$1"
+    local LC_ALL=C
+    local -a candidates=()
+    shopt -s nullglob
+    candidates=("$file".bak.*)
+    shopt -u nullglob
+    if (( ${#candidates[@]} > 0 )); then
+        printf '%s' "${candidates[${#candidates[@]} - 1]}"
+    fi
+}
+
+same_backup_content() {
+    local file="$1"
+    local backup="$2"
+    if [[ -L "$file" || -L "$backup" ]]; then
+        [[ -L "$file" && -L "$backup" && "$(readlink "$file")" == "$(readlink "$backup")" ]]
+    else
+        cmp -s -- "$file" "$backup"
+    fi
+}
+
+backup_if_needed() {
+    local file="$1"
+    local latest backup timestamp
+    [[ -e "$file" || -L "$file" ]] || return 0
+
+    latest="$(latest_backup "$file")"
+    if [[ -n "$latest" ]] && same_backup_content "$file" "$latest"; then
+        return 0
+    fi
+
+    timestamp="$(date +%Y%m%d-%H%M%S-%N)"
+    backup="$file.bak.$timestamp"
+    cp -aT -- "$file" "$backup" || die 1 "failed to back up '$file'"
+    backup_files+=("$backup")
+}
+
+write_atomic() {
+    local source="$1"
+    local destination="$2"
+    mkdir -p "${destination%/*}" || die 1 "failed to create '${destination%/*}'"
+    mv -f -- "$source" "$destination" || die 1 "failed to update '$destination'"
+}
+
+btop_theme_link="$CONFIG_HOME/btop/themes/current.theme"
+btop_theme_target="$CURRENT_LINK/btop.theme"
+if [[ -L "$btop_theme_link" && "$(readlink "$btop_theme_link")" == "$btop_theme_target" ]]; then
+    unchanged_components+=("btop theme link: already configured")
+else
+    mkdir -p "${btop_theme_link%/*}" || die 1 "failed to create btop themes directory"
+    if [[ -e "$btop_theme_link" || -L "$btop_theme_link" ]]; then
+        backup_if_needed "$btop_theme_link"
+        modified_files+=("$btop_theme_link")
+    else
+        created_files+=("$btop_theme_link")
+    fi
+    ln -sfnT -- "$btop_theme_target" "$btop_theme_link" || die 1 "failed to configure btop theme link"
+fi
+
+btop_conf="$CONFIG_HOME/btop/btop.conf"
+if [[ -f "$btop_conf" ]] &&
+   [[ "$(grep -Ec '^[[:space:]]*color_theme[[:space:]]*=[[:space:]]*"current"[[:space:]]*$' "$btop_conf")" -eq 1 ]]; then
+    unchanged_components+=("btop config: already configured")
+else
+    btop_tmp="$TMPDIR/btop.conf"
+    if [[ -f "$btop_conf" ]]; then
+        awk '
+            BEGIN { replaced = 0 }
+            /^[[:space:]]*color_theme[[:space:]]*=/ {
+                if (!replaced) {
+                    print "color_theme = \"current\""
+                    replaced = 1
+                }
+                next
+            }
+            { print }
+            END {
+                if (!replaced) print "color_theme = \"current\""
+            }
+        ' "$btop_conf" > "$btop_tmp" || die 1 "failed to stage btop config"
+        backup_if_needed "$btop_conf"
+        modified_files+=("$btop_conf")
+    else
+        printf 'color_theme = "current"\n' > "$btop_tmp" || die 1 "failed to stage btop config"
+        created_files+=("$btop_conf")
+    fi
+    write_atomic "$btop_tmp" "$btop_conf"
+fi
+
+nvim_loader="$CONFIG_HOME/nvim/lua/plugins/theme.lua"
+nvim_loader_tmp="$TMPDIR/theme.lua"
+nvim_loader_lines=(
+    'local theme_path = vim.fn.expand("~/.config/themes/current/neovim.lua")'
+    'local ok, spec = pcall(dofile, theme_path)'
+    ''
+    'if not ok then'
+    '  vim.schedule(function()'
+    '    vim.notify("Failed to load active theme: " .. tostring(spec), vim.log.levels.ERROR)'
+    '  end)'
+    '  return {}'
+    'end'
+    ''
+    'if type(spec) ~= "table" then'
+    '  vim.schedule(function()'
+    '    vim.notify("Active theme did not return a Lazy plugin spec", vim.log.levels.ERROR)'
+    '  end)'
+    '  return {}'
+    'end'
+    ''
+    'return spec'
+)
+printf '%s\n' "${nvim_loader_lines[@]}" > "$nvim_loader_tmp" ||
+    die 1 "failed to stage Neovim plugin loader"
+
+if [[ -f "$nvim_loader" ]] && cmp -s -- "$nvim_loader_tmp" "$nvim_loader"; then
+    unchanged_components+=("Neovim plugin loader: already configured")
+else
+    if [[ -e "$nvim_loader" || -L "$nvim_loader" ]]; then
+        backup_if_needed "$nvim_loader"
+        modified_files+=("$nvim_loader")
+    else
+        created_files+=("$nvim_loader")
+    fi
+    write_atomic "$nvim_loader_tmp" "$nvim_loader"
+fi
+
+# Migrate the obsolete post-Lazy loader hook. The new lua/plugins/theme.lua file
+# is discovered automatically by the existing { import = "plugins" } spec.
+nvim_init="$CONFIG_HOME/nvim/init.lua"
+if [[ -f "$nvim_init" ]] && grep -Fxq 'require("theme-loader")' "$nvim_init"; then
+    nvim_init_tmp="$TMPDIR/init.lua"
+    grep -Fvx 'require("theme-loader")' "$nvim_init" > "$nvim_init_tmp" || true
+    backup_if_needed "$nvim_init"
+    modified_files+=("$nvim_init")
+    write_atomic "$nvim_init_tmp" "$nvim_init"
+else
+    unchanged_components+=("Neovim legacy init hook: already absent")
+fi
+
+nvim_lazy_config="$CONFIG_HOME/nvim/lua/config/lazy.lua"
+if [[ ! -f "$nvim_lazy_config" ]] ||
+   ! grep -Eq "import[[:space:]]*=[[:space:]]*['\\\"]plugins['\\\"]" "$nvim_lazy_config"; then
+    die 1 "Neovim Lazy config does not import the plugins directory"
+fi
+
+declare -a verification_lines=()
+if bash -n "$SWITCH_SCRIPT"; then
+    verification_lines+=("PASS bash -n theme-switch (exit 0)")
+else
+    die 1 "bash -n failed for '$SWITCH_SCRIPT'"
+fi
+if bash -n "$SETUP_SCRIPT"; then
+    verification_lines+=("PASS bash -n theme-switch-setup (exit 0)")
+else
+    die 1 "bash -n failed for '$SETUP_SCRIPT'"
+fi
+
+verification_lines+=("PASS runtime dependencies available (flock, jq)")
+
+if command -v nvim >/dev/null 2>&1; then
+    if nvim --headless -u NONE -c "luafile $nvim_loader" -c 'quit' >/dev/null 2>&1; then
+        verification_lines+=("PASS nvim Lazy plugin loader check (exit 0)")
+    else
+        die 1 "Neovim loader validation failed"
+    fi
+else
+    die 1 "nvim is required to validate the Neovim loader"
+fi
+
+if [[ -L "$CURRENT_LINK" ]]; then
+    if [[ -e "$CURRENT_LINK/btop.theme" && -e "$CURRENT_LINK/neovim.lua" &&
+          -e "$CURRENT_LINK/vscode.json" && -e "$CURRENT_LINK/waybar.css" &&
+          -e "$btop_theme_link" ]]; then
+        verification_lines+=("PASS active-theme symlink chain resolves")
+    else
+        die 1 "active-theme symlink chain does not resolve"
+    fi
+else
+    verification_lines+=("PASS symlink resolution check skipped (no active theme)")
+fi
+
+active_theme_after="$(snapshot_symlink "$CURRENT_LINK")"
+[[ "$active_theme_before" == "$active_theme_after" ]] ||
+    die 1 "self-check failed: active theme changed during setup"
+for index in "${!editor_paths[@]}"; do
+    editor_after="$(snapshot_file "${editor_paths[$index]}")"
+    [[ "${editor_before[$index]}" == "$editor_after" ]] ||
+        die 1 "self-check failed: editor settings changed at '${editor_paths[$index]}'"
+done
+
+printf 'confirmed: active theme and editor settings untouched\n'
+printf '\nSetup report:\n'
+if (( ${#created_files[@]} == 0 )); then
+    printf '  created: none\n'
+else
+    for item in "${created_files[@]}"; do printf '  created: %s\n' "$item"; done
+fi
+if (( ${#modified_files[@]} == 0 )); then
+    printf '  modified: none\n'
+else
+    for item in "${modified_files[@]}"; do printf '  modified: %s\n' "$item"; done
+fi
+if (( ${#backup_files[@]} == 0 )); then
+    printf '  backed up: none\n'
+else
+    for item in "${backup_files[@]}"; do printf '  backed up: %s\n' "$item"; done
+fi
+for item in "${unchanged_components[@]}"; do printf '  already configured: %s\n' "$item"; done
+printf '\nVerification:\n'
+for item in "${verification_lines[@]}"; do printf '  %s\n' "$item"; done
