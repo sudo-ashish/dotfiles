@@ -20,6 +20,8 @@ core_packages=(
   wl-clipboard
   kitty
   rofi
+  brightnessctl
+  jq
   swaync
   waybar
   zsh
