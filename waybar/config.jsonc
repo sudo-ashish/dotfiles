@@ -44,7 +44,7 @@
     "format-connected": "󰂱",
     "format-no-controller": "",
     "tooltip-format": "Devices connected: {num_connections}",
-    "on-click": "~/.local/bin/floating-toggle-tui custom_tui_floating bluetui",
+    "on-click": "kitty --class bluetui -e bluetui",
   },
 
   "pulseaudio": {
@@ -72,7 +72,7 @@
     "tooltip-format-ethernet": "{ifname} ",
     "tooltip-format-disconnected": "Disconnected",
     "max-length": 50,
-    "on-click": "~/.local/bin/floating-toggle-tui custom_tui_floating impala",
+    "on-click": "kitty --class impala -e impala",
   },
 
   "battery": {
