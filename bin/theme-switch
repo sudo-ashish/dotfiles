@@ -257,7 +257,22 @@ if [[ -n "$kitty_link_tmp" ]]; then
     commit_temps+=("$kitty_link_tmp")
 fi
 
+start_waybar() {
+    if ! command -v waybar >/dev/null 2>&1; then
+        warn "Waybar is not installed; could not start it"
+        return 1
+    fi
+
+    waybar </dev/null >/dev/null 2>&1 &
+    waybar_pid=$!
+    disown "$waybar_pid" 2>/dev/null || true
+    printf 'Waybar was not running; started it in the background.\n'
+}
+
 if (( theme_changed == 0 && ${#commit_destinations[@]} == 0 )); then
+    if ! pgrep -x waybar >/dev/null 2>&1; then
+        start_waybar || true
+    fi
     printf 'Theme `%s` is already active; nothing to do.\n' "$theme_name"
     exit 0
 fi
@@ -356,7 +371,7 @@ if (( theme_changed == 1 )); then
             warn "Waybar is running but could not be signalled"
         fi
     else
-        warn "Waybar is not running; reload skipped"
+        start_waybar || true
     fi
 fi
 

@@ -840,29 +840,67 @@ install_backgrounds() {
 }
 
 install_lazyvim() {
+  local nvim_dir="${HOME}/.config/nvim"
+  local lazy_config="${HOME}/.config/nvim/lua/config/lazy.lua"
+  local clone_tmp
+
   heading 'Installing LazyVim'
   if ! mkdir -p -- "${HOME}/.config"; then
     error "Could not create ${HOME}/.config."
     return 1
   fi
 
-  if [[ -e ${HOME}/.config/nvim || -L ${HOME}/.config/nvim ]]; then
+  if [[ -e ${nvim_dir} || -L ${nvim_dir} ]]; then
+    if [[ -f ${lazy_config} ]]; then
+      ok 'An nvim config already exists; leaving it unchanged.'
+      return 0
+    fi
+
+    # Older installer versions ran theme-switch-setup first. That created only
+    # lua/plugins/theme.lua, causing the subsequent LazyVim clone to be skipped.
+    # Repair that partial directory, but never merge into a real user config.
+    if [[ -d ${nvim_dir} && ! -L ${nvim_dir} && ! -e ${nvim_dir}/init.lua ]]; then
+      info 'An incomplete nvim config exists; adding the missing LazyVim starter files.'
+      if ! clone_tmp="$(mktemp -d "${HOME}/.config/.lazyvim-starter.XXXXXX")"; then
+        error 'Could not create a temporary directory for the LazyVim starter.'
+        return 1
+      fi
+      if ! git clone https://github.com/LazyVim/starter "${clone_tmp}"; then
+        rm -rf -- "${clone_tmp}"
+        error 'Failed to clone the LazyVim starter config.'
+        return 1
+      fi
+      rm -rf -- "${clone_tmp}/.git"
+      if ! cp -an -- "${clone_tmp}/." "${nvim_dir}/"; then
+        rm -rf -- "${clone_tmp}"
+        error 'Failed to merge the missing LazyVim starter files.'
+        return 1
+      fi
+      rm -rf -- "${clone_tmp}"
+      if [[ ! -f ${lazy_config} ]]; then
+        error 'The repaired nvim config is still missing lua/config/lazy.lua.'
+        return 1
+      fi
+      ok "Repaired the incomplete LazyVim config at ${nvim_dir}"
+      return 0
+    fi
+
     ok 'An nvim config already exists; leaving it unchanged.'
     return 0
   fi
 
   info 'Cloning the LazyVim starter config.'
-  if ! git clone https://github.com/LazyVim/starter "${HOME}/.config/nvim"; then
+  if ! git clone https://github.com/LazyVim/starter "${nvim_dir}"; then
     error 'Failed to clone the LazyVim starter config.'
     return 1
   fi
 
-  if ! rm -rf -- "${HOME}/.config/nvim/.git"; then
+  if ! rm -rf -- "${nvim_dir}/.git"; then
     error 'Failed to remove the LazyVim starter Git metadata.'
     return 1
   fi
 
-  ok "Installed LazyVim to ${HOME}/.config/nvim"
+  ok "Installed LazyVim to ${nvim_dir}"
 }
 
 install_nvim_plugins() {
@@ -887,6 +925,68 @@ install_nvim_plugins() {
   fi
 
   ok "Installed nvim plugins to ${HOME}/.config/nvim/lua/plugins"
+}
+
+install_lazy_nvim_plugin_manager() {
+  local lazy_root="${XDG_DATA_HOME:-${HOME}/.local/share}/nvim/lazy"
+  local lazy_dir="${lazy_root}/lazy.nvim"
+  local lazy_entry="${lazy_dir}/lua/lazy/init.lua"
+  local broken_dir=''
+
+  if [[ ! -f ${HOME}/.config/nvim/lua/config/lazy.lua ]]; then
+    skip 'LazyVim config is unavailable; lazy.nvim bootstrap skipped'
+    return 0
+  fi
+
+  if [[ -f ${lazy_entry} ]]; then
+    ok 'lazy.nvim is already installed'
+    return 0
+  fi
+
+  if ! mkdir -p -- "${lazy_root}"; then
+    error "Could not create ${lazy_root}."
+    return 1
+  fi
+
+  if [[ -e ${lazy_dir} || -L ${lazy_dir} ]]; then
+    broken_dir="${lazy_dir}.incomplete.$(date +%Y%m%d-%H%M%S)"
+    while [[ -e ${broken_dir} || -L ${broken_dir} ]]; do
+      broken_dir="${broken_dir}-1"
+    done
+    warn 'The lazy.nvim directory is incomplete; replacing the interrupted clone.'
+    if ! mv -- "${lazy_dir}" "${broken_dir}"; then
+      error 'Could not move the incomplete lazy.nvim directory aside.'
+      return 1
+    fi
+  else
+    info 'Installing lazy.nvim plugin manager.'
+  fi
+
+  if ! git clone --filter=blob:none --branch=stable \
+    https://github.com/folke/lazy.nvim.git "${lazy_dir}"; then
+    rm -rf -- "${lazy_dir}"
+    if [[ -n ${broken_dir} ]]; then
+      mv -- "${broken_dir}" "${lazy_dir}" ||
+        error "Could not restore the incomplete lazy.nvim directory from ${broken_dir}."
+    fi
+    error 'Failed to install lazy.nvim.'
+    return 1
+  fi
+
+  if [[ ! -f ${lazy_entry} ]]; then
+    rm -rf -- "${lazy_dir}"
+    if [[ -n ${broken_dir} ]]; then
+      mv -- "${broken_dir}" "${lazy_dir}" ||
+        error "Could not restore the incomplete lazy.nvim directory from ${broken_dir}."
+    fi
+    error 'The lazy.nvim clone completed without lua/lazy/init.lua.'
+    return 1
+  fi
+
+  if [[ -n ${broken_dir} ]]; then
+    rm -rf -- "${broken_dir}"
+  fi
+  ok "Installed lazy.nvim to ${lazy_dir}"
 }
 
 apply_theme() {
@@ -965,10 +1065,11 @@ main() {
   install_downloaded_fonts
   install_bundled_fonts
   install_dotfiles || warn 'Dotfile installation encountered an error; some configs may not have been installed.'
-  install_theme_switcher || warn 'Theme-switcher installation or initial setup encountered an error.'
-  install_backgrounds || warn 'Background installation encountered an error; backgrounds may not have been installed.'
   install_lazyvim || warn 'LazyVim installation encountered an error.'
   install_nvim_plugins || warn 'nvim plugin installation encountered an error.'
+  install_lazy_nvim_plugin_manager || warn 'lazy.nvim installation encountered an error.'
+  install_theme_switcher || warn 'Theme-switcher installation or initial setup encountered an error.'
+  install_backgrounds || warn 'Background installation encountered an error; backgrounds may not have been installed.'
   print_summary
   apply_theme
   heading 'Restart Required'

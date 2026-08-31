@@ -227,7 +227,7 @@ reported as a warning and does not stop the restart prompt.
 
 | Component | Behavior |
 | --- | --- |
-| Waybar | `waybar/style.css` imports `themes/current/waybar.css`. On a theme change, running Waybar processes receive `SIGUSR2`. |
+| Waybar | `waybar/style.css` imports `themes/current/waybar.css`. On a theme change, running Waybar processes receive `SIGUSR2`. If Waybar is not running, including when the requested theme is already active, the switcher starts and disowns it in the background. |
 | Kitty | `~/.config/kitty/color.conf` becomes a symlink to the selected theme's `color.conf`. Running Kitty processes receive `SIGUSR1` when the link changes. |
 | btop | Setup creates `~/.config/btop/themes/current.theme` pointing through the active-theme symlink and sets `color_theme = "current"` in `btop.conf`. Restart btop to refresh it. |
 | Neovim | A Lazy plugin spec loads `~/.config/themes/current/neovim.lua`. Restart Neovim sessions to load the selected scheme/plugin. |
@@ -359,22 +359,12 @@ theme name, while `theme-switch-setup` accepts no arguments.
 
 ### Clean LazyVim installation order
 
-> [!WARNING]
-> On a system with no `~/.config/nvim`, the current installer runs
-> `theme-switch-setup` before cloning LazyVim. Setup creates
-> `~/.config/nvim/lua/plugins/theme.lua` and then stops because
-> `lua/config/lazy.lua` does not exist. The later LazyVim step sees that the
-> `nvim` path now exists and skips its clone.
-
-For a new installation where LazyVim is wanted, create the starter config
-before the first installer run:
-
-```bash
-mkdir -p ~/.config
-git clone https://github.com/LazyVim/starter ~/.config/nvim
-rm -rf ~/.config/nvim/.git
-./install.sh
-```
+The installer creates or repairs the LazyVim starter before copying plugin
+specs and running `theme-switch-setup`. It also repairs the partial nvim
+directory created by older installer versions, without replacing existing
+files. The lazy.nvim plugin-manager checkout is validated separately; an
+interrupted checkout that contains `.git` but lacks `lua/lazy/init.lua` is
+replaced transactionally and restored if the new clone fails.
 
 Do not remove an existing `~/.config/nvim` without first inspecting and backing
 up your own configuration.
