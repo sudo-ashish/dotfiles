@@ -238,7 +238,7 @@ install_aur_packages() {
   fi
 
   info "Installing AUR fonts: ${packages[*]}"
-  if ! yay -S --needed "${packages[@]}"; then
+  if ! yay -S --needed --noconfirm "${packages[@]}"; then
     error 'Failed to install required AUR fonts.'
     return 1
   fi
@@ -839,6 +839,71 @@ install_backgrounds() {
   ok "Installed backgrounds to ${destination}"
 }
 
+install_lazyvim() {
+  heading 'Installing LazyVim'
+  if ! mkdir -p -- "${HOME}/.config"; then
+    error "Could not create ${HOME}/.config."
+    return 1
+  fi
+
+  if [[ -e ${HOME}/.config/nvim || -L ${HOME}/.config/nvim ]]; then
+    ok 'An nvim config already exists; leaving it unchanged.'
+    return 0
+  fi
+
+  info 'Cloning the LazyVim starter config.'
+  if ! git clone https://github.com/LazyVim/starter "${HOME}/.config/nvim"; then
+    error 'Failed to clone the LazyVim starter config.'
+    return 1
+  fi
+
+  if ! rm -rf -- "${HOME}/.config/nvim/.git"; then
+    error 'Failed to remove the LazyVim starter Git metadata.'
+    return 1
+  fi
+
+  ok "Installed LazyVim to ${HOME}/.config/nvim"
+}
+
+install_nvim_plugins() {
+  if [[ ! -d ${SCRIPT_DIR}/nvim/plugins ]]; then
+    skip 'nvim plugins directory not found'
+    return 0
+  fi
+
+  if directories_match "${SCRIPT_DIR}/nvim/plugins" "${HOME}/.config/nvim/lua/plugins"; then
+    ok "${HOME}/.config/nvim/lua/plugins already matches the repository"
+    return 0
+  fi
+
+  if ! mkdir -p -- "${HOME}/.config/nvim/lua"; then
+    error "Could not create ${HOME}/.config/nvim/lua."
+    return 1
+  fi
+
+  if ! cp -a -- "${SCRIPT_DIR}/nvim/plugins" "${HOME}/.config/nvim/lua/"; then
+    error "Failed to install nvim plugins to ${HOME}/.config/nvim/lua/plugins."
+    return 1
+  fi
+
+  ok "Installed nvim plugins to ${HOME}/.config/nvim/lua/plugins"
+}
+
+apply_theme() {
+  local theme_switch_bin="${HOME}/.local/bin/theme-switch"
+
+  heading 'Applying Theme'
+  if [[ ! -x ${theme_switch_bin} ]]; then
+    warn 'theme-switch is not installed; the theme was not applied.'
+    return 0
+  fi
+
+  if ! "${theme_switch_bin}" gruvbox; then
+    warn 'theme-switch exited with an error.'
+  fi
+  return 0
+}
+
 summary_list() {
   local title=$1
   shift
@@ -902,7 +967,10 @@ main() {
   install_dotfiles || warn 'Dotfile installation encountered an error; some configs may not have been installed.'
   install_theme_switcher || warn 'Theme-switcher installation or initial setup encountered an error.'
   install_backgrounds || warn 'Background installation encountered an error; backgrounds may not have been installed.'
+  install_lazyvim || warn 'LazyVim installation encountered an error.'
+  install_nvim_plugins || warn 'nvim plugin installation encountered an error.'
   print_summary
+  apply_theme
   heading 'Restart Required'
   if confirm 'Restart the system now?'; then
     if ! sudo systemctl reboot; then
