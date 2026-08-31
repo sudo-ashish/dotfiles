@@ -34,6 +34,13 @@ core_packages=(
   zsh
 )
 
+# Applications supplied through the AUR. Add package names here; the installer
+# skips packages already present and installs only the missing ones with yay.
+aur_packages=(
+  localsend-bin
+  vscodium-bin
+)
+
 # Font families used by the repository and available from Arch's official repos.
 pacman_fonts=(
   ttf-jetbrains-mono-nerd # JetBrainsMono Nerd Font (kitty, hyprlock, rofi, swaync, waybar)
@@ -74,6 +81,9 @@ yay_available=false
 apps_installed=()
 apps_present=()
 apps_skipped=()
+aur_apps_installed=()
+aur_apps_present=()
+aur_apps_skipped=()
 fonts_pacman_installed=()
 fonts_pacman_present=()
 fonts_aur_installed=()
@@ -144,9 +154,9 @@ confirm_strict() {
     fi
 
     case ${answer,,} in
-      y|yes) return 0 ;;
-      n|no) return 1 ;;
-      *) warn 'Please answer y or n.' ;;
+    y | yes) return 0 ;;
+    n | no) return 1 ;;
+    *) warn 'Please answer y or n.' ;;
     esac
   done
 }
@@ -229,17 +239,19 @@ install_yay() {
 }
 
 install_aur_packages() {
+  local description=$1
+  shift
   local -a packages=("$@")
 
   ((${#packages[@]})) || return 0
   if ! command -v yay &>/dev/null; then
-    error 'yay is not available; cannot install AUR fonts.'
+    error "yay is not available; cannot install ${description}."
     return 1
   fi
 
-  info "Installing AUR fonts: ${packages[*]}"
+  info "Installing ${description}: ${packages[*]}"
   if ! yay -S --needed --noconfirm "${packages[@]}"; then
-    error 'Failed to install required AUR fonts.'
+    error "Failed to install ${description}."
     return 1
   fi
 }
@@ -511,6 +523,41 @@ check_yay() {
   fi
 }
 
+check_aur_packages() {
+  local package
+  local -a missing=()
+
+  heading 'Checking AUR applications'
+  for package in "${aur_packages[@]}"; do
+    if is_installed "${package}"; then
+      ok "${package} already installed"
+      aur_apps_present+=("${package}")
+    else
+      printf '[MISSING] %s\n' "${package}"
+      missing+=("${package}")
+    fi
+  done
+
+  if !((${#missing[@]})); then
+    info 'All required AUR applications are already installed.'
+    return 0
+  fi
+
+  printf 'The following AUR applications are missing:\n'
+  print_items "${missing[@]}"
+  if [[ ${yay_available} != true ]]; then
+    warn 'yay is unavailable; these AUR applications were skipped.'
+    aur_apps_skipped+=("${missing[@]}")
+    return 0
+  fi
+
+  if install_aur_packages 'AUR applications' "${missing[@]}"; then
+    aur_apps_installed+=("${missing[@]}")
+  else
+    aur_apps_skipped+=("${missing[@]}")
+  fi
+}
+
 check_aur_fonts() {
   local package
   local -a missing=()
@@ -537,7 +584,7 @@ check_aur_fonts() {
     return 0
   fi
 
-  if install_aur_packages "${missing[@]}"; then
+  if install_aur_packages 'AUR fonts' "${missing[@]}"; then
     fonts_aur_installed+=("${missing[@]}")
   else
     warn 'AUR font installation failed; install these packages manually.'
@@ -1023,6 +1070,9 @@ print_summary() {
   summary_list 'Applications installed:' "${apps_installed[@]}"
   summary_list 'Applications already installed:' "${apps_present[@]}"
   summary_list 'Applications not installed:' "${apps_skipped[@]}"
+  summary_list 'AUR applications installed with yay:' "${aur_apps_installed[@]}"
+  summary_list 'AUR applications already installed:' "${aur_apps_present[@]}"
+  summary_list 'AUR applications not installed:' "${aur_apps_skipped[@]}"
   summary_list 'Fonts installed with pacman:' "${fonts_pacman_installed[@]}"
   summary_list 'Fonts already installed with pacman:' "${fonts_pacman_present[@]}"
   summary_list 'Fonts installed with yay:' "${fonts_aur_installed[@]}"
@@ -1060,6 +1110,7 @@ main() {
   check_core_packages || warn 'One or more required applications could not be installed.'
   check_pacman_fonts
   check_yay
+  check_aur_packages
   check_aur_fonts
   setup_sddm || warn 'sddm setup encountered an error; sddm may not be enabled.'
   install_downloaded_fonts

@@ -69,8 +69,8 @@ The installer performs these operations in order:
 2. Checks the required packages with `pacman -Q` and installs only missing
    packages with `sudo pacman -S --needed`.
 3. Checks the official-repository fonts and installs missing packages.
-4. Installs `yay` from the AUR when it is absent, then uses it to install the
-   Rubik font.
+4. Installs `yay` from the AUR when it is absent, then uses it to install any
+   missing packages in `aur_packages` and the Rubik font.
 5. Offers to install and enable SDDM.
 6. Installs downloaded and repository-bundled fonts.
 7. Copies the Hyprland, Kitty, Rofi, SwayNC, Waybar, and Zsh directories into
@@ -121,6 +121,12 @@ yay -S --needed --noconfirm ttf-rubik-vf
 
 If `yay` setup or the AUR installation fails, Rubik is listed for manual
 installation in the final summary.
+
+General AUR applications can be added to the editable `aur_packages` array at
+the top of `install.sh`. Each package is checked with `pacman -Q`; installed
+packages are skipped and missing packages are installed together with
+`yay -S --needed --noconfirm`. Failed or skipped packages appear in the final
+installation summary.
 
 ### Fonts
 
