@@ -76,6 +76,7 @@ config_destinations=(hypr kitty rofi swaync waybar zsh)
 # -----------------------------------------------------------------------------
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 TEMP_DIR=''
+TEMP_DIRS=()
 yay_available=false
 
 apps_installed=()
@@ -106,9 +107,16 @@ else
 fi
 
 cleanup() {
-  if [[ -n ${TEMP_DIR} && -d ${TEMP_DIR} && ${TEMP_DIR} == /tmp/* ]]; then
-    rm -rf -- "${TEMP_DIR}"
-  fi
+  local temporary_directory
+
+  for temporary_directory in "${TEMP_DIRS[@]}"; do
+    [[ -n ${temporary_directory} && -d ${temporary_directory} ]] || continue
+    case ${temporary_directory} in
+    /tmp/dotfile-* | "${HOME}/.config/".dotfile-* | "${HOME}/Pictures/".dotfile-*)
+      rm -rf -- "${temporary_directory}" || true
+      ;;
+    esac
+  done
 }
 trap cleanup EXIT
 
@@ -214,6 +222,7 @@ install_yay() {
   fi
 
   TEMP_DIR="$(mktemp -d /tmp/dotfile-yay.XXXXXX)"
+  TEMP_DIRS+=("${TEMP_DIR}")
   info "Building yay in temporary directory ${TEMP_DIR}"
   if ! git clone https://aur.archlinux.org/yay.git "${TEMP_DIR}/yay"; then
     error 'Failed to clone yay from the AUR.'
@@ -313,6 +322,7 @@ install_downloaded_fonts() {
         manual_fonts_needed+=("${family} -> ${usage} (temporary directory creation failed)")
         continue
       fi
+      TEMP_DIRS+=("${TEMP_DIR}")
       workspace_ready=true
     fi
 
@@ -424,28 +434,39 @@ install_bundled_fonts() {
 
 directories_match() {
   local source=$1 destination=$2
-  [[ -d ${destination} ]] && diff -qr -- "${source}" "${destination}" &>/dev/null
+  [[ -d ${destination} && ! -L ${destination} ]] &&
+    diff -qr -- "${source}" "${destination}" &>/dev/null
 }
 
-source_tree_matches() {
-  local source_root=$1 destination_root=$2 source_path relative destination_path
+theme_directories_match() {
+  local source=$1 destination=$2
 
-  [[ -d ${destination_root} ]] || return 1
-  while IFS= read -r -d '' source_path; do
-    relative=${source_path#"${source_root}/"}
-    destination_path="${destination_root}/${relative}"
-    if [[ -L ${source_path} ]]; then
-      [[ -L ${destination_path} ]] || return 1
-      [[ $(readlink -- "${source_path}") == $(readlink -- "${destination_path}") ]] || return 1
-    elif [[ -d ${source_path} ]]; then
-      [[ -d ${destination_path} && ! -L ${destination_path} ]] || return 1
-    elif [[ -f ${source_path} ]]; then
-      [[ -f ${destination_path} && ! -L ${destination_path} ]] || return 1
-      cmp -s -- "${source_path}" "${destination_path}" || return 1
-    else
-      return 1
-    fi
-  done < <(find "${source_root}" -mindepth 1 -print0)
+  # current is runtime state, not repository content. Everything else must
+  # match in both directions so stale or user-added files are not mistaken for
+  # an exact installation.
+  [[ -d ${destination} && ! -L ${destination} ]] &&
+    [[ ! -e ${destination}/current || -L ${destination}/current ]] &&
+    diff -qr --exclude=current -- "${source}" "${destination}" &>/dev/null
+}
+
+next_backup_path() {
+  local base=$1 timestamp candidate
+
+  timestamp="$(date +%Y%m%d-%H%M%S)"
+  candidate="${base}.bak.${timestamp}"
+  while [[ -e ${candidate} || -L ${candidate} ]]; do
+    candidate="${candidate}-1"
+  done
+  printf '%s\n' "${candidate}"
+}
+
+make_staging_directory() {
+  local parent=$1 label=$2 output_name=$3 staging_directory
+  local -n output_ref="${output_name}"
+
+  staging_directory="$(mktemp -d "${parent}/.dotfile-${label}.XXXXXX")" || return 1
+  TEMP_DIRS+=("${staging_directory}")
+  output_ref=${staging_directory}
 }
 
 check_core_packages() {
@@ -615,11 +636,17 @@ setup_sddm() {
 }
 
 install_dotfiles() {
-  local index source destination label timestamp backup_root
+  local index source destination label timestamp backup_root='' staging_root
+  local had_existing install_failed=false
   local -a pending_indices=()
   local -a backup_indices=()
 
   heading 'Installing dotfiles'
+  if ! mkdir -p -- "${HOME}/.config"; then
+    error "Could not create ${HOME}/.config."
+    return 1
+  fi
+
   for index in "${!config_sources[@]}"; do
     source="${SCRIPT_DIR}/${config_sources[index]}"
     destination="${HOME}/.config/${config_destinations[index]}"
@@ -654,6 +681,19 @@ install_dotfiles() {
     printf 'Existing differing configs will be moved to one backup folder before installation.\n'
   fi
 
+  if ! make_staging_directory "${HOME}/.config" configs staging_root; then
+    error 'Could not create a staging directory for dotfiles.'
+    return 1
+  fi
+  for index in "${pending_indices[@]}"; do
+    source="${SCRIPT_DIR}/${config_sources[index]}"
+    label=${config_destinations[index]}
+    if ! cp -aT -- "${source}" "${staging_root}/${label}"; then
+      error "Failed to stage the ${label} config; installed configs were not changed."
+      return 1
+    fi
+  done
+
   if ((${#backup_indices[@]})); then
     timestamp="$(date +%Y%m%d-%H%M%S)"
     backup_root="${HOME}/.config/dotfile-backup-${timestamp}"
@@ -668,36 +708,55 @@ install_dotfiles() {
     fi
     backups_created+=("${backup_root}")
 
-    for index in "${backup_indices[@]}"; do
-      destination="${HOME}/.config/${config_destinations[index]}"
-      if ! mv -- "${destination}" "${backup_root}/${config_destinations[index]}"; then
-        error "Could not move ${destination} into the backup folder."
-        return 1
-      fi
-      configs_backed_up+=("${config_destinations[index]}")
-      ok "Moved existing ${config_destinations[index]} config to ${backup_root}"
-    done
   fi
 
   for index in "${pending_indices[@]}"; do
-    source="${SCRIPT_DIR}/${config_sources[index]}"
     destination="${HOME}/.config/${config_destinations[index]}"
     label=${config_destinations[index]}
+    had_existing=false
 
-    if ! mkdir -p -- "${destination}" || ! cp -a -- "${source}/." "${destination}/"; then
-      error "Failed to install ${label} config; its previous version remains in the backup folder when applicable."
-      configs_skipped+=("${label} (copy failed)")
+    if [[ -e ${destination} || -L ${destination} ]]; then
+      if [[ -z ${backup_root} ]]; then
+        error "${destination} appeared after the installation plan was prepared; leaving it unchanged."
+        configs_skipped+=("${label} (destination changed)")
+        install_failed=true
+        continue
+      fi
+      if ! mv -T -- "${destination}" "${backup_root}/${label}"; then
+        error "Could not move ${destination} into the backup folder."
+        configs_skipped+=("${label} (backup failed)")
+        install_failed=true
+        continue
+      fi
+      had_existing=true
+      ok "Moved existing ${label} config to ${backup_root}"
+    fi
+
+    if ! mv -T -- "${staging_root}/${label}" "${destination}"; then
+      if [[ ${had_existing} == true ]] &&
+        ! mv -T -- "${backup_root}/${label}" "${destination}"; then
+        error "Failed to restore ${destination} from ${backup_root}/${label}."
+      fi
+      error "Failed to install ${label} config; its previous version was restored when possible."
+      configs_skipped+=("${label} (install failed)")
+      install_failed=true
       continue
     fi
 
+    if [[ ${had_existing} == true ]]; then
+      configs_backed_up+=("${label}")
+    fi
     ok "Installed ${label} config to ${destination}"
     configs_installed+=("${label}")
   done
+
+  rm -rf -- "${staging_root}"
+  [[ ${install_failed} == false ]]
 }
 
 ensure_local_bin_path() {
   local path_rule='export PATH="$HOME/.local/bin:$PATH"'
-  local shell_file shell_tmp first_line match_count timestamp backup
+  local shell_file shell_tmp first_line match_count backup grep_status
 
   for shell_file in "${HOME}/.bashrc" "${HOME}/.zshrc"; do
     if [[ -e ${shell_file} || -L ${shell_file} ]]; then
@@ -712,12 +771,7 @@ ensure_local_bin_path() {
         ok "${shell_file} already adds ~/.local/bin to PATH at the top"
         continue
       fi
-      timestamp="$(date +%Y%m%d-%H%M%S)"
-      backup="${shell_file}.bak.${timestamp}"
-      while [[ -e ${backup} || -L ${backup} ]]; do
-        timestamp="${timestamp}-1"
-        backup="${shell_file}.bak.${timestamp}"
-      done
+      backup="$(next_backup_path "${shell_file}")"
       if ! cp -aT -- "${shell_file}" "${backup}"; then
         error "Could not back up ${shell_file}."
         return 1
@@ -732,13 +786,19 @@ ensure_local_bin_path() {
         error "Could not stage the PATH rule for ${shell_file}."
         return 1
       fi
-      grep -Fvx -- "${path_rule}" "${shell_file}" >>"${shell_tmp}" || true
-      if ! command cat -- "${shell_tmp}" >"${shell_file}"; then
+      grep_status=0
+      grep -Fvx -- "${path_rule}" "${shell_file}" >>"${shell_tmp}" || grep_status=$?
+      if ((grep_status > 1)); then
+        rm -f -- "${shell_tmp}"
+        error "Could not read ${shell_file} while staging its PATH update."
+        return 1
+      fi
+      if ! chmod --reference="${shell_file}" "${shell_tmp}" ||
+        ! mv -fT -- "${shell_tmp}" "${shell_file}"; then
         rm -f -- "${shell_tmp}"
         error "Could not add ~/.local/bin to PATH in ${shell_file}."
         return 1
       fi
-      rm -f -- "${shell_tmp}"
     elif ! printf '%s\n' "${path_rule}" >"${shell_file}"; then
       error "Could not create ${shell_file}."
       return 1
@@ -753,7 +813,9 @@ install_theme_switcher() {
   local bin_source="${SCRIPT_DIR}/bin"
   local bin_destination="${HOME}/.local/bin"
   local setup_script="${HOME}/.local/bin/theme-switch-setup"
-  local script_name source destination script_tmp timestamp backup
+  local script_name source destination script_tmp backup
+  local themes_stage_root staged_themes current_target active_theme
+  local destination_was_moved=false
   local -a scripts=(theme-switch theme-switch-setup)
 
   heading 'Installing theme switcher'
@@ -762,42 +824,73 @@ install_theme_switcher() {
     return 1
   fi
   for script_name in "${scripts[@]}"; do
-    if [[ ! -f ${bin_source}/${script_name} ]]; then
+    if [[ ! -f ${bin_source}/${script_name} || ! -x ${bin_source}/${script_name} ]]; then
       error "Theme-switcher script is missing: ${bin_source}/${script_name}"
       return 1
     fi
   done
 
-  if source_tree_matches "${themes_source}" "${themes_destination}"; then
-    ok "${themes_destination} already contains the repository themes"
+  if ! mkdir -p -- "${HOME}/.config"; then
+    error "Could not create ${HOME}/.config."
+    return 1
+  fi
+
+  if theme_directories_match "${themes_source}" "${themes_destination}"; then
+    ok "${themes_destination} already exactly matches the repository themes"
     configs_present+=(themes)
   else
-    if [[ -e ${themes_destination} || -L ${themes_destination} ]]; then
-      if [[ ! -d ${themes_destination} || -L ${themes_destination} ]]; then
-        error "Cannot install themes because ${themes_destination} is not a directory."
-        return 1
-      fi
-      timestamp="$(date +%Y%m%d-%H%M%S)"
-      backup="${themes_destination}.bak.${timestamp}"
-      while [[ -e ${backup} || -L ${backup} ]]; do
-        timestamp="${timestamp}-1"
-        backup="${themes_destination}.bak.${timestamp}"
-      done
-      if ! cp -aT -- "${themes_destination}" "${backup}"; then
-        error "Could not back up ${themes_destination}."
-        return 1
-      fi
-      backups_created+=("${backup}")
-      configs_backed_up+=(themes)
-    elif ! mkdir -p -- "${themes_destination}"; then
-      error "Could not create ${themes_destination}."
+    if ! make_staging_directory "${HOME}/.config" theme-install themes_stage_root; then
+      error 'Could not create a staging directory for themes.'
+      return 1
+    fi
+    staged_themes="${themes_stage_root}/themes"
+    if ! cp -aT -- "${themes_source}" "${staged_themes}"; then
+      error 'Failed to stage the repository themes; installed themes were not changed.'
       return 1
     fi
 
-    if ! cp -a -- "${themes_source}/." "${themes_destination}/"; then
-      error "Failed to copy themes to ${themes_destination}."
+    # Preserve runtime state only when it points at a theme that still exists
+    # in the repository. Custom or stale themes remain available in the backup.
+    if [[ -d ${themes_destination} && ! -L ${themes_destination} &&
+      -L ${themes_destination}/current ]]; then
+      current_target="$(readlink -- "${themes_destination}/current")" || {
+        error "Could not read ${themes_destination}/current."
+        return 1
+      }
+      active_theme=${current_target%/}
+      active_theme=${active_theme##*/}
+      if [[ -n ${active_theme} && -d ${themes_source}/${active_theme} &&
+        ! -L ${themes_source}/${active_theme} ]]; then
+        if ! ln -s -- "${themes_destination}/${active_theme}" "${staged_themes}/current"; then
+          error 'Could not preserve the active-theme link in the staged themes.'
+          return 1
+        fi
+      else
+        warn "The active theme is not in the repository; it will remain in the themes backup."
+      fi
+    fi
+
+    if [[ -e ${themes_destination} || -L ${themes_destination} ]]; then
+      backup="$(next_backup_path "${themes_destination}")"
+      if ! mv -T -- "${themes_destination}" "${backup}"; then
+        error "Could not move ${themes_destination} to ${backup}."
+        return 1
+      fi
+      destination_was_moved=true
+      backups_created+=("${backup}")
+      configs_backed_up+=(themes)
+      ok "Moved existing themes to ${backup}"
+    fi
+
+    if ! mv -T -- "${staged_themes}" "${themes_destination}"; then
+      if [[ ${destination_was_moved} == true ]] &&
+        ! mv -T -- "${backup}" "${themes_destination}"; then
+        error "Failed to restore ${themes_destination} from ${backup}."
+      fi
+      error 'Failed to install the staged themes; previous themes were restored when possible.'
       return 1
     fi
+    rm -rf -- "${themes_stage_root}"
     ok "Installed themes to ${themes_destination}"
     configs_installed+=(themes)
   fi
@@ -819,9 +912,35 @@ install_theme_switcher() {
       error "Could not stage ${destination}."
       return 1
     fi
-    if ! cp -aT -- "${source}" "${script_tmp}" ||
-      ! mv -fT -- "${script_tmp}" "${destination}"; then
+    if ! cp -aT -- "${source}" "${script_tmp}"; then
       rm -f -- "${script_tmp}"
+      error "Failed to stage ${destination}."
+      return 1
+    fi
+
+    backup=''
+    if [[ -e ${destination} || -L ${destination} ]]; then
+      backup="$(next_backup_path "${destination}")"
+      if [[ -d ${destination} && ! -L ${destination} ]]; then
+        if ! mv -T -- "${destination}" "${backup}"; then
+          rm -f -- "${script_tmp}"
+          error "Could not back up unexpected directory ${destination}."
+          return 1
+        fi
+      elif ! cp -aT -- "${destination}" "${backup}"; then
+        rm -f -- "${script_tmp}"
+        error "Could not back up ${destination}."
+        return 1
+      fi
+      backups_created+=("${backup}")
+    fi
+
+    if ! mv -fT -- "${script_tmp}" "${destination}"; then
+      rm -f -- "${script_tmp}"
+      if [[ -n ${backup} && -d ${backup} && ! -L ${backup} ]] &&
+        ! mv -T -- "${backup}" "${destination}"; then
+        error "Failed to restore ${destination} from ${backup}."
+      fi
       error "Failed to install ${destination}."
       return 1
     fi
@@ -837,7 +956,8 @@ install_theme_switcher() {
 }
 
 install_backgrounds() {
-  local source destination timestamp backup_root
+  local source destination timestamp backup_root='' staging_root staged_backgrounds
+  local destination_was_moved=false
 
   heading 'Installing backgrounds'
   if ! command -v xdg-user-dirs-update &>/dev/null; then
@@ -858,6 +978,20 @@ install_backgrounds() {
     return 0
   fi
 
+  if ! mkdir -p -- "${HOME}/Pictures"; then
+    error "Could not create ${HOME}/Pictures."
+    return 1
+  fi
+  if ! make_staging_directory "${HOME}/Pictures" background-install staging_root; then
+    error 'Could not create a staging directory for backgrounds.'
+    return 1
+  fi
+  staged_backgrounds="${staging_root}/Background"
+  if ! cp -aT -- "${source}" "${staged_backgrounds}"; then
+    error 'Failed to stage backgrounds; installed backgrounds were not changed.'
+    return 1
+  fi
+
   if [[ -e ${destination} || -L ${destination} ]]; then
     timestamp="$(date +%Y%m%d-%H%M%S)"
     backup_root="${HOME}/Pictures/Background-backup-${timestamp}"
@@ -866,23 +1000,25 @@ install_backgrounds() {
       backup_root="${HOME}/Pictures/Background-backup-${timestamp}"
     done
 
-    if ! mv -- "${destination}" "${backup_root}"; then
+    if ! mv -T -- "${destination}" "${backup_root}"; then
       error "Could not move ${destination} to the backup folder."
       return 1
     fi
+    destination_was_moved=true
+    backups_created+=("${backup_root}")
     ok "Backed up existing Background folder to ${backup_root}"
   fi
 
-  if ! mkdir -p -- "${HOME}/Pictures"; then
-    error "Could not create ${HOME}/Pictures."
+  if ! mv -T -- "${staged_backgrounds}" "${destination}"; then
+    if [[ ${destination_was_moved} == true ]] &&
+      ! mv -T -- "${backup_root}" "${destination}"; then
+      error "Failed to restore ${destination} from ${backup_root}."
+    fi
+    error "Failed to install backgrounds to ${destination}; previous backgrounds were restored when possible."
     return 1
   fi
 
-  if ! cp -a -- "${source}/." "${destination}/"; then
-    error "Failed to install backgrounds to ${destination}."
-    return 1
-  fi
-
+  rm -rf -- "${staging_root}"
   ok "Installed backgrounds to ${destination}"
 }
 
@@ -1041,14 +1177,14 @@ apply_theme() {
 
   heading 'Applying Theme'
   if [[ ! -x ${theme_switch_bin} ]]; then
-    warn 'theme-switch is not installed; the theme was not applied.'
-    return 0
+    error 'theme-switch is not installed; the default theme was not applied.'
+    return 1
   fi
 
   if ! "${theme_switch_bin}" gruvbox; then
-    warn 'theme-switch exited with an error.'
+    error 'theme-switch could not apply the default gruvbox theme.'
+    return 1
   fi
-  return 0
 }
 
 summary_list() {
@@ -1096,6 +1232,8 @@ print_summary() {
 }
 
 main() {
+  local theme_switcher_ready=false
+
   if [[ ${EUID} -eq 0 ]]; then
     error 'Do not run this installer as root. Run it as your normal user; it requests sudo only for pacman.'
     exit 1
@@ -1119,10 +1257,18 @@ main() {
   install_lazyvim || warn 'LazyVim installation encountered an error.'
   install_nvim_plugins || warn 'nvim plugin installation encountered an error.'
   install_lazy_nvim_plugin_manager || warn 'lazy.nvim installation encountered an error.'
-  install_theme_switcher || warn 'Theme-switcher installation or initial setup encountered an error.'
+  if install_theme_switcher; then
+    theme_switcher_ready=true
+  else
+    warn 'Theme-switcher installation or initial setup encountered an error.'
+  fi
   install_backgrounds || warn 'Background installation encountered an error; backgrounds may not have been installed.'
   print_summary
-  apply_theme
+  if [[ ${theme_switcher_ready} == true ]]; then
+    apply_theme || warn 'The installer continued, but the default theme was not applied.'
+  else
+    warn 'Skipping default theme application because theme-switcher setup did not complete.'
+  fi
   heading 'Restart Required'
   if confirm 'Restart the system now?'; then
     if ! sudo systemctl reboot; then

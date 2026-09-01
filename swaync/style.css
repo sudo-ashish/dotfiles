@@ -1,4 +1,4 @@
-@import "colors/colors.css";
+@import "../themes/current/colors.css";
 
 * {
 	all: unset;

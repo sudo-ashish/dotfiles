@@ -22,3 +22,5 @@
 @define-color color13 #b48ead;
 @define-color color14 #8fbcbb;
 @define-color color15 #eceff4;
+@define-color red @color1;
+@define-color yellow @color3;

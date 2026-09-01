@@ -2,6 +2,7 @@
 
 set -u
 set -o pipefail
+umask 077
 
 readonly APP_TITLE="Theme Switcher Setup"
 readonly CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
@@ -9,6 +10,15 @@ readonly THEMES_DIR="$CONFIG_HOME/themes"
 readonly CURRENT_LINK="$THEMES_DIR/current"
 readonly SWITCH_SCRIPT="$HOME/.local/bin/theme-switch"
 readonly SETUP_SCRIPT="$HOME/.local/bin/theme-switch-setup"
+
+TMPDIR=''
+
+cleanup() {
+    if [[ -n "$TMPDIR" && -d "$TMPDIR" && "$TMPDIR" == "$CONFIG_HOME"/.theme-switch-setup.* ]]; then
+        rm -rf -- "$TMPDIR"
+    fi
+}
+trap cleanup EXIT
 
 emit_notification() {
     local urgency="$1"
@@ -35,16 +45,14 @@ die() {
     exit "$status"
 }
 
-TMPDIR="$(mktemp -d "$CONFIG_HOME/.theme-switch-setup.XXXXXX")" || {
-    error "could not create a temporary directory"
-    exit 1
-}
-trap 'rm -rf "$TMPDIR"' EXIT
-
 if (( $# != 0 )); then
     error "usage: theme-switch-setup"
     exit 2
 fi
+
+mkdir -p -- "$CONFIG_HOME" || die 1 "could not create '$CONFIG_HOME'"
+TMPDIR="$(mktemp -d "$CONFIG_HOME/.theme-switch-setup.XXXXXX")" ||
+    die 1 "could not create a temporary directory"
 
 install_dependency() {
     local command_name="$1"
@@ -62,7 +70,11 @@ install_dependency() {
 
 install_dependency flock util-linux
 install_dependency jq jq
-lock_file="${XDG_RUNTIME_DIR:-/tmp}/theme-switch.lock"
+lock_directory="${XDG_RUNTIME_DIR:-/tmp}"
+if [[ ! -d "$lock_directory" || ! -w "$lock_directory" ]]; then
+    lock_directory=/tmp
+fi
+lock_file="$lock_directory/theme-switch-${UID}.lock"
 exec 9>"$lock_file" || die 1 "cannot open lock file '$lock_file'"
 flock -n 9 || die 1 "another theme-switch operation is already running"
 
@@ -148,7 +160,7 @@ write_atomic() {
     local source="$1"
     local destination="$2"
     mkdir -p "${destination%/*}" || die 1 "failed to create '${destination%/*}'"
-    mv -f -- "$source" "$destination" || die 1 "failed to update '$destination'"
+    mv -fT -- "$source" "$destination" || die 1 "failed to update '$destination'"
 }
 
 btop_theme_link="$CONFIG_HOME/btop/themes/current.theme"
@@ -163,7 +175,9 @@ else
     else
         created_files+=("$btop_theme_link")
     fi
-    ln -sfnT -- "$btop_theme_target" "$btop_theme_link" || die 1 "failed to configure btop theme link"
+    btop_link_tmp="$TMPDIR/current.theme"
+    ln -s -- "$btop_theme_target" "$btop_link_tmp" || die 1 "failed to stage btop theme link"
+    write_atomic "$btop_link_tmp" "$btop_theme_link"
 fi
 
 btop_conf="$CONFIG_HOME/btop/btop.conf"
@@ -252,6 +266,67 @@ if [[ ! -f "$nvim_lazy_config" ]] ||
     die 1 "Neovim Lazy config does not import the plugins directory"
 fi
 
+declare -a editor_extension_changes=()
+
+install_editor_theme_extensions() {
+    local editor_bin="$1" metadata_file extension normalized installed_extensions
+    local installed_any=0 had_error=0
+    local -a metadata_files=()
+    local -A seen_extensions=()
+
+    shopt -s nullglob
+    metadata_files=("$THEMES_DIR"/*/vscode.json)
+    shopt -u nullglob
+    (( ${#metadata_files[@]} > 0 )) || return 0
+
+    if ! installed_extensions="$("$editor_bin" --list-extensions 2>/dev/null)"; then
+        warn "could not list extensions for $editor_bin; editor theme extension setup skipped"
+        return 0
+    fi
+
+    for metadata_file in "${metadata_files[@]}"; do
+        extension="$(
+            jq -er '
+                if ((.name | type) == "string" and (.name | length) > 0)
+                   and ((.extension | type) == "string" and (.extension | length) > 0)
+                then .extension
+                else error("invalid VS Code theme metadata")
+                end
+            ' "$metadata_file"
+        )" || {
+            warn "invalid editor metadata in '$metadata_file'; extension setup skipped for that theme"
+            had_error=1
+            continue
+        }
+        normalized=${extension,,}
+        [[ -z "${seen_extensions[$normalized]+set}" ]] || continue
+        seen_extensions["$normalized"]=1
+
+        if grep -Fxiq -- "$extension" <<< "$installed_extensions"; then
+            continue
+        fi
+        if "$editor_bin" --install-extension "$extension" >/dev/null 2>&1; then
+            editor_extension_changes+=("$editor_bin: installed $extension")
+            installed_extensions+=$'\n'"$extension"
+            installed_any=1
+        else
+            warn "could not install editor extension '$extension' for $editor_bin"
+            had_error=1
+        fi
+    done
+
+    if (( installed_any == 0 && had_error == 0 )); then
+        unchanged_components+=("$editor_bin theme extensions: already available")
+    fi
+}
+
+if command -v codium >/dev/null 2>&1; then
+    install_editor_theme_extensions codium
+fi
+if command -v code >/dev/null 2>&1; then
+    install_editor_theme_extensions code
+fi
+
 declare -a verification_lines=()
 if bash -n "$SWITCH_SCRIPT"; then
     verification_lines+=("PASS bash -n theme-switch (exit 0)")
@@ -266,6 +341,54 @@ fi
 
 verification_lines+=("PASS runtime dependencies available (flock, jq)")
 
+declare -a active_required_files=(btop.theme neovim.lua)
+
+verify_theme_reference() {
+    local label="$1" config_file="$2" reference="$3" theme_file="$4"
+
+    if [[ ! -f "$config_file" ]]; then
+        verification_lines+=("SKIP $label integration check (config absent)")
+    elif grep -Fq "$reference" "$config_file"; then
+        verification_lines+=("PASS $label references themes/current")
+        active_required_files+=("$theme_file")
+    else
+        warn "$label config does not reference '$reference'; theme switching will not update it"
+        verification_lines+=("WARN $label does not reference themes/current")
+    fi
+}
+
+verify_theme_reference Waybar "$CONFIG_HOME/waybar/style.css" \
+    'themes/current/waybar.css' waybar.css
+verify_theme_reference SwayNC "$CONFIG_HOME/swaync/style.css" \
+    'themes/current/colors.css' colors.css
+
+rofi_reference_found=0
+rofi_config_found=0
+rofi_color_files=(
+    "$CONFIG_HOME/rofi/launchers/type-1/shared/colors.rasi"
+    "$CONFIG_HOME/rofi/launchers/type-2/shared/colors.rasi"
+    "$CONFIG_HOME/rofi/theme-switcher/shared/colors.rasi"
+    "$CONFIG_HOME/rofi/wallpaper-launcher/type-1/shared/colors.rasi"
+    "$CONFIG_HOME/rofi/wallpaper-launcher/type-2/shared/colors.rasi"
+)
+for rofi_color_file in "${rofi_color_files[@]}"; do
+    [[ -f "$rofi_color_file" ]] || continue
+    rofi_config_found=1
+    if grep -Fq 'themes/current/color.rasi' "$rofi_color_file"; then
+        rofi_reference_found=1
+    else
+        warn "Rofi colors file '$rofi_color_file' does not reference themes/current"
+    fi
+done
+if (( rofi_config_found == 0 )); then
+    verification_lines+=("SKIP Rofi integration check (config absent)")
+elif (( rofi_reference_found == 1 )); then
+    verification_lines+=("PASS Rofi references themes/current")
+    active_required_files+=(color.rasi)
+else
+    verification_lines+=("WARN Rofi does not reference themes/current")
+fi
+
 if command -v nvim >/dev/null 2>&1; then
     if nvim --headless -u NONE -c "luafile $nvim_loader" -c 'quit' >/dev/null 2>&1; then
         verification_lines+=("PASS nvim Lazy plugin loader check (exit 0)")
@@ -277,12 +400,21 @@ else
 fi
 
 if [[ -L "$CURRENT_LINK" ]]; then
-    if [[ -e "$CURRENT_LINK/btop.theme" && -e "$CURRENT_LINK/neovim.lua" &&
-          -e "$CURRENT_LINK/vscode.json" && -e "$CURRENT_LINK/waybar.css" &&
-          -e "$btop_theme_link" ]]; then
+    active_chain_valid=1
+    if [[ ! -e "$btop_theme_link" ]]; then
+        warn "btop active-theme symlink does not currently resolve; the next valid theme switch can repair it"
+        active_chain_valid=0
+    fi
+    for required_file in "${active_required_files[@]}"; do
+        if [[ ! -f "$CURRENT_LINK/$required_file" ]]; then
+            warn "active theme is missing '$required_file'; the next valid theme switch can repair it"
+            active_chain_valid=0
+        fi
+    done
+    if (( active_chain_valid == 1 )); then
         verification_lines+=("PASS active-theme symlink chain resolves")
     else
-        die 1 "active-theme symlink chain does not resolve"
+        verification_lines+=("WARN active-theme symlink chain is incomplete")
     fi
 else
     verification_lines+=("PASS symlink resolution check skipped (no active theme)")
@@ -314,6 +446,7 @@ if (( ${#backup_files[@]} == 0 )); then
 else
     for item in "${backup_files[@]}"; do printf '  backed up: %s\n' "$item"; done
 fi
+for item in "${editor_extension_changes[@]}"; do printf '  editor extension: %s\n' "$item"; done
 for item in "${unchanged_components[@]}"; do printf '  already configured: %s\n' "$item"; done
 printf '\nVerification:\n'
 for item in "${verification_lines[@]}"; do printf '  %s\n' "$item"; done
