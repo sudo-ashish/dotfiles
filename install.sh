@@ -76,6 +76,7 @@ config_destinations=(hypr kitty rofi swaync waybar zsh)
 # -----------------------------------------------------------------------------
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 TEMP_DIR=''
+SUDO_KEEPALIVE_PID=''
 TEMP_DIRS=()
 yay_available=false
 
@@ -117,6 +118,10 @@ cleanup() {
       ;;
     esac
   done
+
+  if [[ -n ${SUDO_KEEPALIVE_PID} ]]; then
+    kill "${SUDO_KEEPALIVE_PID}" &>/dev/null || true
+  fi
 }
 trap cleanup EXIT
 
@@ -1172,19 +1177,77 @@ install_lazy_nvim_plugin_manager() {
   ok "Installed lazy.nvim to ${lazy_dir}"
 }
 
-apply_theme() {
-  local theme_switch_bin="${HOME}/.local/bin/theme-switch"
+install_theme_apply_once() {
+  local wrapper_path="${HOME}/.local/bin/theme-apply-once"
+  local unit_dir="${HOME}/.config/systemd/user"
+  local unit_path="${unit_dir}/theme-apply-once.service"
 
-  heading 'Applying Theme'
-  if [[ ! -x ${theme_switch_bin} ]]; then
-    error 'theme-switch is not installed; the default theme was not applied.'
+  heading 'Scheduling First-Boot Theme'
+  if ! mkdir -p -- "${HOME}/.local/bin"; then
+    error "Could not create ${HOME}/.local/bin."
     return 1
   fi
 
-  if ! "${theme_switch_bin}" gruvbox; then
-    error 'theme-switch could not apply the default gruvbox theme.'
+  if ! cat >"${wrapper_path}" <<'THEME_APPLY_ONCE_EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+theme_switch="${HOME}/.local/bin/theme-switch"
+unit_name='theme-apply-once.service'
+unit_path="${HOME}/.config/systemd/user/${unit_name}"
+self_path="${HOME}/.local/bin/theme-apply-once"
+
+if [[ -x ${theme_switch} ]]; then
+  "${theme_switch}" gruvbox || true
+fi
+
+systemctl --user disable "${unit_name}" &>/dev/null || true
+rm -f -- "${unit_path}"
+rm -f -- "${self_path}"
+systemctl --user daemon-reload &>/dev/null || true
+THEME_APPLY_ONCE_EOF
+  then
+    error "Could not write ${wrapper_path}."
     return 1
   fi
+
+  if ! chmod +x -- "${wrapper_path}"; then
+    error "Could not make ${wrapper_path} executable."
+    return 1
+  fi
+
+  if ! mkdir -p -- "${unit_dir}"; then
+    error "Could not create ${unit_dir}."
+    return 1
+  fi
+
+  if ! cat >"${unit_path}" <<'THEME_APPLY_ONCE_UNIT_EOF'
+[Unit]
+Description=Apply the default theme after first boot, then self-remove
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/theme-apply-once
+
+[Install]
+WantedBy=default.target
+THEME_APPLY_ONCE_UNIT_EOF
+  then
+    error "Could not write ${unit_path}."
+    return 1
+  fi
+
+  if ! systemctl --user daemon-reload; then
+    error 'Could not reload systemd user units.'
+    return 1
+  fi
+
+  if ! systemctl --user enable theme-apply-once.service; then
+    error 'Could not enable theme-apply-once.service.'
+    return 1
+  fi
+
+  ok 'The default theme will be applied automatically after the next restart.'
 }
 
 summary_list() {
@@ -1244,6 +1307,21 @@ main() {
     exit 1
   fi
 
+  heading 'Restart Required'
+  info 'Installation will finish with an automatic system restart.'
+  if ! confirm 'Continue? The system will restart automatically when installation finishes.'; then
+    info 'Nothing was changed.'
+    exit 0
+  fi
+
+  info 'Requesting sudo access once, up front, for the rest of the install.'
+  if ! sudo -v; then
+    error 'Could not obtain sudo access; installation cannot continue.'
+    exit 1
+  fi
+  ( while kill -0 "$$" 2>/dev/null; do sudo -n true; sleep 60; done ) &>/dev/null &
+  SUDO_KEEPALIVE_PID=$!
+
   info "Repository: ${SCRIPT_DIR}"
   check_core_packages || warn 'One or more required applications could not be installed.'
   check_pacman_fonts
@@ -1265,17 +1343,14 @@ main() {
   install_backgrounds || warn 'Background installation encountered an error; backgrounds may not have been installed.'
   print_summary
   if [[ ${theme_switcher_ready} == true ]]; then
-    apply_theme || warn 'The installer continued, but the default theme was not applied.'
+    install_theme_apply_once || warn 'The installer continued, but first-boot theme application was not scheduled.'
   else
-    warn 'Skipping default theme application because theme-switcher setup did not complete.'
+    warn 'Skipping first-boot theme scheduling because theme-switcher setup did not complete.'
   fi
-  heading 'Restart Required'
-  if confirm 'Restart the system now?'; then
-    if ! sudo systemctl reboot; then
-      error 'Failed to restart the system. Please restart manually.'
-    fi
-  else
-    info 'Restart the system before using the newly installed configuration.'
+  heading 'Restarting'
+  info 'Restarting the system now.'
+  if ! sudo systemctl reboot; then
+    error 'Failed to restart the system automatically. Please restart manually.'
   fi
 }
 
