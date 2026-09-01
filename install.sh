@@ -1044,9 +1044,6 @@ install_lazyvim() {
       return 0
     fi
 
-    # Older installer versions ran theme-switch-setup first. That created only
-    # lua/plugins/theme.lua, causing the subsequent LazyVim clone to be skipped.
-    # Repair that partial directory, but never merge into a real user config.
     if [[ -d ${nvim_dir} && ! -L ${nvim_dir} && ! -e ${nvim_dir}/init.lua ]]; then
       info 'An incomplete nvim config exists; adding the missing LazyVim starter files.'
       if ! clone_tmp="$(mktemp -d "${HOME}/.config/.lazyvim-starter.XXXXXX")"; then
@@ -1319,7 +1316,10 @@ main() {
     error 'Could not obtain sudo access; installation cannot continue.'
     exit 1
   fi
-  ( while kill -0 "$$" 2>/dev/null; do sudo -n true; sleep 60; done ) &>/dev/null &
+  (while kill -0 "$$" 2>/dev/null; do
+    sudo -n true
+    sleep 60
+  done) &>/dev/null &
   SUDO_KEEPALIVE_PID=$!
 
   info "Repository: ${SCRIPT_DIR}"

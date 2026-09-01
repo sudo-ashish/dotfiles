@@ -102,7 +102,7 @@ listview {
 /*****----- Elements -----*****/
 element {
     enabled:                     true;
-    padding:                     15px 5px 30px;
+    padding:                     15px 15px 30px 15px;
     border-radius:               100%;
     background-color:            @background-alt;
     text-color:                  @foreground;
@@ -124,7 +124,7 @@ element selected.normal {
 /*****----- Message -----*****/
 message {
     enabled:                     true;
-    margin:                      0px 15px 15px 15px;
+    margin:                      15px;
     padding:                     15px;
     border-radius:               100%;
     background-color:            @background-alt;
