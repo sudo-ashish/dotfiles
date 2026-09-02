@@ -32,6 +32,8 @@ core_packages=(
   swaync
   waybar
   zsh
+  gnome-calculator
+  uzip
 )
 
 # Applications supplied through the AUR. Add package names here; the installer
@@ -202,7 +204,7 @@ install_pacman_packages() {
   ((${#packages[@]})) || return 0
 
   info "Installing ${description}: ${packages[*]}"
-  if ! sudo pacman -S --needed "${packages[@]}"; then
+  if ! sudo pacman -S --needed --noconfirm "${packages[@]}"; then
     error "Failed to install ${description}."
     return 1
   fi
