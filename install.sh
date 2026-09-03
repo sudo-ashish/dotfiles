@@ -33,7 +33,7 @@ core_packages=(
   waybar
   zsh
   gnome-calculator
-  uzip
+  unzip
 )
 
 # Applications supplied through the AUR. Add package names here; the installer
