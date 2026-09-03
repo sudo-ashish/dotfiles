@@ -2,7 +2,7 @@
 
 # Define the directory containing wallpapers
 WALLPAPERS_DIR="$HOME/.config/themes/current/backgrounds/"
-LINK_DIR="$HOME/Pictures/Wallpaper"
+LINK_DIR="$HOME/.config/themes/current/"
 LINK_PATH="$LINK_DIR/default.png"
 
 # Check if directory exists
