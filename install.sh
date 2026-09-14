@@ -17,7 +17,7 @@ core_packages=(
   hyprlock
   qt5-wayland
   qt6-wayland
-  polkit-kde-agent
+  hyprpolkitagent
   xdg-desktop-portal-hyprland
   xdg-desktop-portal-gtk
   awww
