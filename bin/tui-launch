@@ -7,9 +7,11 @@ if [[ -z "$tui" ]]; then
   exit 1
 fi
 
+class="tui-$tui"
+
 address=$(
   hyprctl clients -j |
-    jq -r --arg class "$tui" \
+    jq -r --arg class "$class" \
       '.[] | select(.class == $class) | .address' |
     head -n1
 )
@@ -17,5 +19,8 @@ address=$(
 if [[ -n "$address" ]]; then
   hyprctl dispatch "hl.dsp.focus({ window = \"address:$address\" })"
 else
-  kitty --class "$tui" -e "$tui"
+  kitty \
+    --class "$class" \
+    --title "$tui" \
+    -e "$tui"
 fi

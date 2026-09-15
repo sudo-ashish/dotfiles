@@ -51,7 +51,15 @@ hl.window_rule({
 
 hl.window_rule({
 	name = "tui-float",
-	match = { class = "^(btop|impala|bluetui)" },
+	match = { class = "^(tui-btop|tui-impala|tui-bluetui)" },
+	float = true,
+	center = true,
+	size = "960 650",
+})
+
+hl.window_rule({
+	name = "custom-float",
+	match = { title = "webapp-create" },
 	float = true,
 	center = true,
 	size = "960 650",

@@ -17,3 +17,4 @@ hl.bind("SUPER + SHIFT + N", hl.dsp.exec_cmd("tui-launch impala"))
 ---- APPS ----
 
 hl.bind("SUPER + SHIFT + B", hl.dsp.exec_cmd("default-browser"))
+hl.bind("SUPER + SHIFT + T", hl.dsp.exec_cmd("tui-launch webapp-create"))
