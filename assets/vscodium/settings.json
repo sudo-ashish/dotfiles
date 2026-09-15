@@ -18,5 +18,5 @@
   "editor.padding.top": 20,
   "window.titleBarStyle": "native",
   "window.menuBarVisibility": "hidden",
-  "window.customTitleBarVisibility": "never",
+  "window.customTitleBarVisibility": "never"
 }
