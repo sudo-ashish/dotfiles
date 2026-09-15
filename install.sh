@@ -20,6 +20,7 @@ core_packages=(
   hyprpolkitagent
   xdg-desktop-portal-hyprland
   xdg-desktop-portal-gtk
+  xdg-utils
   awww
   swayosd
   nautilus
@@ -75,10 +76,10 @@ bundled_fonts=(
   'feather|Icomoon-Feather.ttf|rofi/powermenu/type-1/style-*.rasi and type-2/style.rasi'
 )
 
-# Repository directory -> destination directory below ~/.config.  The zsh
+# Repository file or directory -> destination below ~/.config.  The zsh
 # directory is installed as ~/.config/zsh; this script never modifies ~/.zshrc.
-config_sources=(hypr kitty rofi swaync waybar zsh)
-config_destinations=(hypr kitty rofi swaync waybar zsh)
+config_sources=(hypr kitty rofi swaync waybar zsh assets/vscodium/settings.json)
+config_destinations=(hypr kitty rofi swaync waybar zsh VSCodium/User/settings.json)
 
 # -----------------------------------------------------------------------------
 # Runtime state
@@ -666,10 +667,12 @@ install_dotfiles() {
     destination="${HOME}/.config/${config_destinations[index]}"
     label=${config_destinations[index]}
 
-    if [[ ! -d ${source} ]]; then
-      skip "${label} config directory not found"
+    if [[ ! -d ${source} && ! -f ${source} ]]; then
+      skip "${label} config source not found"
       configs_skipped+=("${label} (source missing)")
-    elif directories_match "${source}" "${destination}"; then
+    elif { [[ -d ${source} ]] && directories_match "${source}" "${destination}"; } ||
+      { [[ -f ${source} && -f ${destination} && ! -L ${destination} ]] &&
+        cmp -s -- "${source}" "${destination}"; }; then
       ok "${destination} already matches the repository"
       configs_present+=("${label}")
     else
@@ -702,7 +705,8 @@ install_dotfiles() {
   for index in "${pending_indices[@]}"; do
     source="${SCRIPT_DIR}/${config_sources[index]}"
     label=${config_destinations[index]}
-    if ! cp -aT -- "${source}" "${staging_root}/${label}"; then
+    if ! mkdir -p -- "$(dirname -- "${staging_root}/${label}")" ||
+      ! cp -aT -- "${source}" "${staging_root}/${label}"; then
       error "Failed to stage the ${label} config; installed configs were not changed."
       return 1
     fi
@@ -729,6 +733,13 @@ install_dotfiles() {
     label=${config_destinations[index]}
     had_existing=false
 
+    if ! mkdir -p -- "$(dirname -- "${destination}")"; then
+      error "Could not create the parent directory for ${destination}."
+      configs_skipped+=("${label} (directory creation failed)")
+      install_failed=true
+      continue
+    fi
+
     if [[ -e ${destination} || -L ${destination} ]]; then
       if [[ -z ${backup_root} ]]; then
         error "${destination} appeared after the installation plan was prepared; leaving it unchanged."
@@ -736,7 +747,8 @@ install_dotfiles() {
         install_failed=true
         continue
       fi
-      if ! mv -T -- "${destination}" "${backup_root}/${label}"; then
+      if ! mkdir -p -- "$(dirname -- "${backup_root}/${label}")" ||
+        ! mv -T -- "${destination}" "${backup_root}/${label}"; then
         error "Could not move ${destination} into the backup folder."
         configs_skipped+=("${label} (backup failed)")
         install_failed=true
@@ -830,16 +842,23 @@ install_theme_switcher() {
   local script_name source destination script_tmp backup
   local themes_stage_root staged_themes current_target active_theme
   local destination_was_moved=false
-  local -a scripts=(theme-switch theme-switch-setup wallpaper-switch)
+  local -a scripts=(
+    theme-switch
+    theme-switch-setup
+    wallpaper-switch
+    default-browser
+    tui-launch
+    webapp-create
+  )
 
-  heading 'Installing theme switcher'
+  heading 'Installing local scripts and themes'
   if [[ ! -d ${themes_source} ]]; then
     error "Theme source directory is missing: ${themes_source}"
     return 1
   fi
   for script_name in "${scripts[@]}"; do
     if [[ ! -f ${bin_source}/${script_name} || ! -x ${bin_source}/${script_name} ]]; then
-      error "Theme-switcher script is missing: ${bin_source}/${script_name}"
+      error "Local script is missing or not executable: ${bin_source}/${script_name}"
       return 1
     fi
   done
