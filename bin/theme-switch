@@ -456,12 +456,12 @@ apply_wallpaper() {
 
     if [[ -z "$first_wallpaper" ]]; then
         warn "theme '$theme_name' has no wallpaper in backgrounds; wallpaper unchanged"
-    elif ! command -v awww >/dev/null 2>&1; then
-        warn "awww is not installed; wallpaper unchanged"
-    elif awww img "$first_wallpaper" >/dev/null 2>&1; then
-        printf 'Wallpaper changed to `%s`.\n' "${first_wallpaper##*/}"
+    elif [[ -x "$HOME/.local/bin/wallpaper-switch" ]]; then
+        if ! "$HOME/.local/bin/wallpaper-switch" "$first_wallpaper"; then
+            warn "wallpaper-switch failed to apply '${first_wallpaper##*/}'"
+        fi
     else
-        warn "awww could not set '${first_wallpaper##*/}'; is awww-daemon running?"
+        warn "wallpaper-switch is not installed; wallpaper unchanged"
     fi
 }
 

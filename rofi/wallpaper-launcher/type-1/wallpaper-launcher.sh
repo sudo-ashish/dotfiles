@@ -2,8 +2,6 @@
 
 # Define the directory containing wallpapers
 WALLPAPERS_DIR="$HOME/.config/themes/current/backgrounds/"
-LINK_DIR="$HOME/.config/themes/current/"
-LINK_PATH="$LINK_DIR/default.png"
 
 # Check if directory exists
 if [ ! -d "$WALLPAPERS_DIR" ]; then
@@ -23,39 +21,8 @@ done | rofi -dmenu -i -show-icons -theme ~/.config/rofi/wallpaper-launcher/type-
 if [ -n "$chosen" ]; then
   selected_file="$WALLPAPERS_DIR/$chosen"
 
-  # Symlink workflow: point default.png at whatever was picked.
-  # mkdir -p is a no-op if the dir already exists.
-  # ln -sfn atomically replaces any existing symlink (or stale file) at LINK_PATH.
-  mkdir -p "$LINK_DIR" || {
-    rofi -e "Failed to create $LINK_DIR"
+  if ! "$HOME/.local/bin/wallpaper-switch" "$selected_file"; then
+    rofi -e "Failed to set wallpaper"
     exit 1
-  }
-  ln -sfn "$selected_file" "$LINK_PATH" || {
-    rofi -e "Failed to symlink $LINK_PATH"
-    exit 1
-  }
-
-  echo "$(date): Selected '$chosen'" >>/tmp/wallpaper.log
-  echo "$(date): Full path: '$selected_file'" >>/tmp/wallpaper.log
-  echo "$(date): Symlinked to '$LINK_PATH'" >>/tmp/wallpaper.log
-
-  # Check for wallpaper daemons
-  if command -v awww >/dev/null 2>&1; then
-    echo "$(date): Using awww" >>/tmp/wallpaper.log
-    awww daemon >/dev/null 2>&1 &
-    sleep 0.5
-    awww img "$LINK_PATH" --transition-type grow --transition-duration 1.5
-  elif command -v swaybg >/dev/null 2>&1; then
-    echo "$(date): Using swaybg" >>/tmp/wallpaper.log
-    killall swaybg >/dev/null 2>&1
-    nohup swaybg -i "$LINK_PATH" -m fill >/tmp/swaybg.log 2>&1 &
-    disown
-  elif command -v hyprpaper >/dev/null 2>&1; then
-    echo "$(date): Using hyprpaper" >>/tmp/wallpaper.log
-    hyprctl hyprpaper preload "$LINK_PATH"
-    hyprctl hyprpaper wallpaper ",$LINK_PATH"
-  else
-    echo "$(date): No daemon found!" >>/tmp/wallpaper.log
-    rofi -e "No wallpaper daemon (awww, swaybg, hyprpaper) found!"
   fi
 fi

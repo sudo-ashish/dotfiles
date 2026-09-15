@@ -1,0 +1,395 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ICON_DIR="$HOME/.local/share/icons/hicolor/256x256/apps"
+DESKTOP_DIR="$HOME/.local/share/applications"
+
+# Change this if your brave-origin binary has a different name.
+BROWSER="${WEBAPP_BROWSER:-brave-origin}"
+
+safe_icon_name() {
+  printf '%s\n' "$1" |
+    tr '[:upper:]' '[:lower:]' |
+    sed 's/[^[:alnum:]]\+/-/g; s/^-//; s/-$//'
+}
+
+require_command() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    printf 'Error: required command not found: %s\n' "$1" >&2
+    exit 1
+  fi
+}
+
+require_plain_name() {
+  local name="$1"
+
+  if [[ -z "$name" ]]; then
+    echo "Error: app name cannot be empty." >&2
+    exit 1
+  fi
+
+  if [[ "$name" == */* ]]; then
+    echo "Error: app name cannot contain '/': $name" >&2
+    exit 1
+  fi
+}
+
+normalize_url() {
+  local url="$1"
+
+  if [[ ! "$url" =~ ^[a-zA-Z][a-zA-Z0-9+.-]*: ]]; then
+    url="https://$url"
+  fi
+
+  printf '%s\n' "$url"
+}
+
+require_http_url() {
+  local url="$1"
+
+  if [[ "$url" =~ [[:space:]] ]]; then
+    echo "Error: URL must not contain whitespace." >&2
+    exit 1
+  fi
+
+  if [[ ! "${url,,}" =~ ^https?:// ]]; then
+    echo "Error: only http:// and https:// URLs are allowed." >&2
+    exit 1
+  fi
+}
+
+download_icon() {
+  local url="$1"
+  local destination="$2"
+
+  curl \
+    -fsSL \
+    --max-time 10 \
+    -o "$destination" \
+    "$url" 2>/dev/null || return 1
+
+  [[ -s "$destination" ]] || return 1
+
+  local mime
+  mime=$(file -b --mime-type "$destination")
+
+  [[ "$mime" == image/* ]]
+}
+
+fetch_site_icon() {
+  local site_url="$1"
+  local destination="$2"
+
+  local origin
+  local page
+  local icon_url=""
+
+  origin=$(sed -E 's|^(https?://[^/]+).*|\1|' <<<"$site_url")
+
+  page=$(
+    curl -fsSL --max-time 5 "$site_url" 2>/dev/null |
+      head -c 150000 |
+      tr '\n' ' ' ||
+      true
+  )
+
+  # Prefer high-resolution Apple touch icon.
+  icon_url=$(
+    grep -oiE \
+      "<link[^>]*rel=[\"'][^\"']*apple-touch-icon[^\"']*[\"'][^>]*>" \
+      <<<"$page" |
+      grep -oiE "href=[\"'][^\"']+" |
+      head -1 |
+      sed -E "s/^href=[\"']//" ||
+      true
+  )
+
+  # If none exists, try a normal favicon declaration.
+  if [[ -z "$icon_url" ]]; then
+    icon_url=$(
+      grep -oiE \
+        "<link[^>]*rel=[\"'][^\"']*(shortcut )?icon[^\"']*[\"'][^>]*>" \
+        <<<"$page" |
+        grep -oiE "href=[\"'][^\"']+" |
+        head -1 |
+        sed -E "s/^href=[\"']//" ||
+        true
+    )
+  fi
+
+  case "$icon_url" in
+  http://* | https://*)
+    ;;
+  //*)
+    icon_url="https:$icon_url"
+    ;;
+  /*)
+    icon_url="$origin$icon_url"
+    ;;
+  ?*)
+    icon_url="$origin/$icon_url"
+    ;;
+  esac
+
+  # Try the discovered icon.
+  if [[ -n "$icon_url" ]] &&
+    download_icon "$icon_url" "$destination"; then
+    return 0
+  fi
+
+  # Common fallback.
+  if download_icon \
+    "$origin/apple-touch-icon.png" \
+    "$destination"; then
+    return 0
+  fi
+
+  # Traditional favicon.
+  if download_icon \
+    "$origin/favicon.ico" \
+    "$destination"; then
+    return 0
+  fi
+
+  # Last resort: Google's favicon service.
+  if download_icon \
+    "https://www.google.com/s2/favicons?domain_url=$site_url&sz=256" \
+    "$destination"; then
+    return 0
+  fi
+
+  return 1
+}
+
+install_local_icon() {
+  local source="$1"
+  local name="$2"
+
+  local mime
+  local extension
+
+  mime=$(file -b --mime-type "$source")
+
+  case "$mime" in
+  image/png)
+    extension="png"
+    ;;
+  image/jpeg)
+    extension="jpg"
+    ;;
+  image/svg+xml)
+    extension="svg"
+    ;;
+  image/webp)
+    extension="webp"
+    ;;
+  image/x-icon | image/vnd.microsoft.icon)
+    extension="ico"
+    ;;
+  *)
+    echo "Error: unsupported icon type: $mime" >&2
+    exit 1
+    ;;
+  esac
+
+  mkdir -p "$ICON_DIR"
+
+  cp "$source" "$ICON_DIR/$name.$extension"
+
+  printf '%s\n' "$name"
+}
+
+desktop_escape() {
+  local value="$1"
+
+  value=${value//\\/\\\\}
+  value=${value//$'\t'/\\t}
+  value=${value//$'\r'/\\r}
+  value=${value//$'\n'/\\n}
+
+  [[ "$value" == " "* ]] &&
+    value="\\s${value# }"
+
+  printf '%s' "$value"
+}
+
+exec_escape_arg() {
+  local value="$1"
+
+  value=${value//\\/\\\\}
+  value=${value//\"/\\\"}
+  value=${value//\`/\\\`}
+  value=${value//\$/\\\$}
+  value=${value//%/%%}
+
+  printf '"%s"' "$value"
+}
+
+update_icon_cache() {
+  if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache \
+      "$HOME/.local/share/icons/hicolor" \
+      >/dev/null 2>&1 || true
+  fi
+}
+
+create_webapp() {
+  local app_name="$1"
+  local app_url="$2"
+  local icon_ref="${3:-}"
+
+  require_plain_name "$app_name"
+
+  app_url=$(normalize_url "$app_url")
+  require_http_url "$app_url"
+
+  mkdir -p "$ICON_DIR" "$DESKTOP_DIR"
+
+  local icon_name
+  icon_name=$(safe_icon_name "$app_name")
+
+  #
+  # Icon handling
+  #
+
+  if [[ -z "$icon_ref" ]]; then
+
+    printf 'Fetching icon for %s...\n' "$app_name"
+
+    if ! fetch_site_icon \
+      "$app_url" \
+      "$ICON_DIR/$icon_name.png"; then
+
+      echo "Error: failed to fetch website icon." >&2
+      exit 1
+    fi
+
+  elif [[ "$icon_ref" =~ ^https?:// ]]; then
+
+    if ! download_icon \
+      "$icon_ref" \
+      "$ICON_DIR/$icon_name.png"; then
+
+      echo "Error: failed to download icon." >&2
+      exit 1
+    fi
+
+  elif [[ -f "$icon_ref" ]]; then
+
+    icon_name=$(
+      install_local_icon \
+        "$icon_ref" \
+        "$icon_name"
+    )
+
+  else
+    # Assume it's already an installed icon theme name.
+    icon_name="${icon_ref%.*}"
+  fi
+
+  update_icon_cache
+
+  #
+  # Desktop launcher
+  #
+
+  local desktop_file
+  desktop_file="$DESKTOP_DIR/$app_name.desktop"
+
+  local exec_command
+
+  exec_command="$BROWSER --app=$(exec_escape_arg "$app_url")"
+
+  local name_field
+  local exec_field
+  local icon_field
+
+  name_field=$(desktop_escape "$app_name")
+  exec_field=$(desktop_escape "$exec_command")
+  icon_field=$(desktop_escape "$icon_name")
+
+  cat >"$desktop_file" <<EOF
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=$name_field
+Comment=$name_field
+Exec=$exec_field
+Icon=$icon_field
+Terminal=false
+StartupNotify=true
+Categories=Network;WebBrowser;
+EOF
+
+  chmod +x "$desktop_file"
+
+  if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database "$DESKTOP_DIR" >/dev/null 2>&1 || true
+  fi
+
+  echo
+  echo "Created web app:"
+  echo "  $desktop_file"
+  echo
+  echo "URL:"
+  echo "  $app_url"
+}
+
+interactive_mode() {
+
+  require_command gum
+
+  echo
+  echo "Create Web App"
+  echo
+
+  local app_name
+  local app_url
+  local icon_ref
+
+  app_name=$(
+    gum input \
+      --prompt "Name> " \
+      --placeholder "YouTube"
+  )
+
+  app_url=$(
+    gum input \
+      --prompt "URL> " \
+      --placeholder "youtube.com"
+  )
+
+  icon_ref=$(
+    gum input \
+      --prompt "Icon> " \
+      --placeholder "Leave empty to fetch automatically"
+  )
+
+  create_webapp \
+    "$app_name" \
+    "$app_url" \
+    "$icon_ref"
+}
+
+main() {
+
+  require_command curl
+  require_command file
+  require_command sed
+  require_command grep
+  require_command "$BROWSER"
+
+  if (($# >= 2)); then
+
+    create_webapp \
+      "$1" \
+      "$2" \
+      "${3:-}"
+
+  else
+    interactive_mode
+  fi
+}
+
+main "$@"

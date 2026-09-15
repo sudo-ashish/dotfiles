@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+
+set -u
+set -o pipefail
+umask 077
+
+readonly APP_TITLE="Wallpaper Switcher"
+readonly CURRENT_DIR="$HOME/.config/themes/current"
+
+emit_notification() {
+    local urgency="$1"
+    shift
+    if command -v notify-send >/dev/null 2>&1; then
+        notify-send --urgency="$urgency" "$APP_TITLE" "$*" >/dev/null 2>&1 || true
+    fi
+}
+
+error() {
+    printf 'error: %s\n' "$*" >&2
+    emit_notification critical "error: $*"
+}
+
+die() {
+    local status="$1"
+    shift
+    error "$*"
+    exit "$status"
+}
+
+if (( $# != 1 )); then
+    die 2 "usage: wallpaper-switch /absolute/path/to/image"
+fi
+
+image_path="$1"
+[[ -d "$CURRENT_DIR" ]] || die 1 "'$CURRENT_DIR' does not resolve to a valid theme directory"
+[[ "$image_path" == /* ]] || die 1 "image path must be absolute: '$image_path'"
+[[ -f "$image_path" ]] || die 1 "image is not a regular file or does not exist: '$image_path'"
+
+readonly LINK_PATH="$CURRENT_DIR/default.png"
+scratch_dir=''
+
+cleanup() {
+    if [[ -n "$scratch_dir" && -d "$scratch_dir" && "$scratch_dir" == "$CURRENT_DIR"/.wallpaper-switch.* ]]; then
+        rm -rf -- "$scratch_dir"
+    fi
+}
+trap cleanup EXIT
+
+# Stage beside the destination so the symlink swap stays on one filesystem.
+scratch_dir="$(mktemp -d "$CURRENT_DIR/.wallpaper-switch.XXXXXX")" ||
+    die 1 "could not create a staging directory in '$CURRENT_DIR'"
+ln -s -- "$image_path" "$scratch_dir/default.png" ||
+    die 1 "failed to stage the wallpaper symlink"
+mv -fT -- "$scratch_dir/default.png" "$LINK_PATH" ||
+    die 1 "could not update wallpaper symlink '$LINK_PATH'"
+
+if ! command -v awww >/dev/null 2>&1; then
+    die 1 "awww is not installed; wallpaper unchanged"
+fi
+
+if awww img "$LINK_PATH" >/dev/null 2>&1; then
+    printf 'Wallpaper changed to `%s`.\n' "${image_path##*/}"
+    exit 0
+fi
+
+die 1 "awww could not set '${image_path##*/}'; is awww-daemon running?"

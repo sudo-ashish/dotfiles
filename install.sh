@@ -34,6 +34,11 @@ core_packages=(
   zsh
   gnome-calculator
   unzip
+  file
+  gum
+  desktop-file-utils
+  curl
+  pavucontrol
 )
 
 # Applications supplied through the AUR. Add package names here; the installer
@@ -41,6 +46,8 @@ core_packages=(
 aur_packages=(
   localsend-bin
   vscodium-bin
+  brave-origin-bin
+  bibata-cursor-theme-bin
 )
 
 # Font families used by the repository and available from Arch's official repos.
@@ -823,7 +830,7 @@ install_theme_switcher() {
   local script_name source destination script_tmp backup
   local themes_stage_root staged_themes current_target active_theme
   local destination_was_moved=false
-  local -a scripts=(theme-switch theme-switch-setup)
+  local -a scripts=(theme-switch theme-switch-setup wallpaper-switch)
 
   heading 'Installing theme switcher'
   if [[ ! -d ${themes_source} ]]; then
@@ -1306,9 +1313,9 @@ main() {
     exit 1
   fi
 
-  heading 'Restart Required'
-  info 'Installation will finish with an automatic system restart.'
-  if ! confirm 'Continue? The system will restart automatically when installation finishes.'; then
+  heading 'Installation'
+  info 'You can choose whether to restart after installation finishes.'
+  if ! confirm 'Continue with installation?'; then
     info 'Nothing was changed.'
     exit 0
   fi
@@ -1349,10 +1356,14 @@ main() {
   else
     warn 'Skipping first-boot theme scheduling because theme-switcher setup did not complete.'
   fi
-  heading 'Restarting'
-  info 'Restarting the system now.'
-  if ! sudo systemctl reboot; then
-    error 'Failed to restart the system automatically. Please restart manually.'
+  heading 'Installation Complete'
+  if confirm_strict 'Restart the system now?'; then
+    info 'Restarting the system now.'
+    if ! sudo systemctl reboot; then
+      error 'Failed to restart the system. Please restart manually.'
+    fi
+  else
+    info 'Restart skipped. You can restart manually when ready.'
   fi
 }
 

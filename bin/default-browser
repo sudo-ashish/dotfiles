@@ -1,0 +1,10 @@
+#!/bin/sh
+
+desktop="$(xdg-settings get default-web-browser)"
+
+file="$HOME/.local/share/applications/$desktop"
+[ -f "$file" ] || file="/usr/share/applications/$desktop"
+
+cmd="$(grep -m1 '^Exec=' "$file" | cut -d= -f2- | sed 's/%[uUfFdDnNickvm]//g')"
+
+exec sh -c "$cmd"

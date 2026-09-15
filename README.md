@@ -81,12 +81,14 @@ The installer performs these operations in order:
    `Background/` directory, so no `~/Pictures/Background` content is copied.
 10. Attempts to install the LazyVim starter when `~/.config/nvim` does not
     exist, then copies the repository's Neovim plugin specs.
-11. Prints an installation summary and attempts to apply `gruvbox`.
-12. Prompts to reboot. The `[Y/n]` prompt defaults to **yes** when Enter is
-    pressed without an answer.
+11. Prints an installation summary and schedules `gruvbox` to be applied after
+    the next restart if theme setup completed.
+12. Asks `Restart the system now? [y/n]` after all installation steps finish.
+    Only an explicit `y` or `yes` reboots. Choosing `n` or `no`, or reaching
+    the end of input, finishes without restarting; an empty answer asks again.
 
 Most high-level failures are reported and the installer continues to the next
-section. Applying the theme is deliberately non-fatal and never prevents the
+section. Scheduling the theme is deliberately non-fatal and never prevents the
 reboot prompt.
 
 ### Packages
@@ -169,7 +171,7 @@ the installer does not start SDDM immediately.
 | `zsh/` | `~/.config/zsh/` | Alias and helper-function fragments |
 | `nvim/plugins/` | `~/.config/nvim/lua/plugins/` | Lazy plugin specs for Snacks and the active theme loader |
 | `themes/` | `~/.config/themes/` | Theme bundles and wallpapers |
-| `bin/` | `~/.local/bin/` | `theme-switch` and `theme-switch-setup` |
+| `bin/` | `~/.local/bin/` | `theme-switch`, `theme-switch-setup`, and `wallpaper-switch` |
 
 The Zsh fragments are copied but are **not automatically sourced**. The
 installer does not change the login shell and does not add a source command for
@@ -226,8 +228,8 @@ The Rofi theme selector is available through `Super` + `Alt` + `Space`. It
 discovers theme directories under `~/.config/themes`, shows the first available
 wallpaper as a preview, and calls the same `theme-switch` command.
 
-The installer attempts to activate `gruvbox` after installation. A failure is
-reported as a warning and does not stop the restart prompt.
+The installer schedules `gruvbox` to be activated after the next restart.
+Scheduling failures are warnings and do not stop the optional restart prompt.
 
 ### Applications Updated by `theme-switch`
 
@@ -239,7 +241,7 @@ reported as a warning and does not stop the restart prompt.
 | Neovim | A Lazy plugin spec loads `~/.config/themes/current/neovim.lua`. Restart Neovim sessions to load the selected scheme/plugin. |
 | VS Code/VSCodium | If `code` or `codium` is installed, the script validates strict-JSON settings, attempts to install the theme extension, and sets `workbench.colorTheme`. It does not explicitly restart the editor. |
 | Rofi | Theme-aware styles import the active theme's `color.rasi`; new Rofi windows read the current link. See the hard-coded-path note below. |
-| Wallpaper | On an actual theme change, the first supported image in the theme's `backgrounds/` directory is passed to `awww img`. `awww-daemon` must already be running. |
+| Wallpaper | On an actual theme change, the first supported image in the theme's `backgrounds/` directory is passed to `wallpaper-switch`, which atomically updates `~/.config/themes/current/default.png` and applies that symlink with `awww img`. `awww-daemon` must already be running. Failures remain warnings and do not roll back the theme. |
 
 The switcher does **not** dynamically update SwayNC colors, Hyprland border or
 Hyprlock colors, `icons.theme`, or `colors.toml`. Those files are either static
@@ -270,20 +272,28 @@ metadata, terminal-color metadata, and one or more wallpapers.
 Use `Super` + `Space` to choose a wallpaper from the active theme. The picker:
 
 1. Reads images from `~/.config/themes/current/backgrounds/`.
-2. Replaces `~/Pictures/Wallpaper/default.png` with a symlink to the selected
-   image.
-3. Tries `awww`, then `swaybg`, then `hyprpaper`.
-4. Appends diagnostic output to `/tmp/wallpaper.log`.
+2. Passes the selected image to `~/.local/bin/wallpaper-switch`, the shared
+   wallpaper application command also used by `theme-switch`.
+3. Shows a Rofi error if the shared command fails.
+
+`wallpaper-switch` accepts exactly one absolute path to an existing regular
+file. It requires `~/.config/themes/current` to resolve to an existing theme
+directory, then atomically replaces `default.png` inside it with a symlink to
+the image. Only after that succeeds does it apply the symlink path with
+`awww img`, without transition flags. Hyprlock reads the same `default.png`.
 
 The normal installation includes `awww`, and Hyprland autostart launches
-`awww-daemon`. The direct `theme-switch` command uses the selected image path
-without updating `~/Pictures/Wallpaper/default.png`.
+`awww-daemon`. The shared command requires that daemon to be running. It prints
+a success message to stdout, or an error to stderr with a critical desktop
+notification if `notify-send` is available. It writes no log files. Argument
+count errors exit 2; other failures exit 1; only a successful live application
+exits 0. If `awww` is missing or fails, the committed symlink remains updated.
 
 ## Repository Structure
 
 ```text
 dotfiles/
-├── bin/                    # Theme setup and switching commands
+├── bin/                    # Theme setup, theme switching, and wallpaper application
 ├── fonts/                  # Bundled Feather icon font
 ├── hypr/                   # Hyprland Lua modules, keybindings, and Hyprlock
 ├── kitty/                  # Kitty terminal configuration
@@ -330,7 +340,7 @@ made local changes under `~/.config`.
 | --- | --- |
 | `~/.config/{hypr,kitty,rofi,swaync,waybar,zsh}` | Exact matches are skipped. Differing existing files, directories, or symlinks are moved into one `~/.config/dotfile-backup-YYYYMMDD-HHMMSS/` directory, then repository content is copied into newly created destinations. |
 | `~/.config/themes` | If repository theme files do not already match, an existing directory is copied to `~/.config/themes.bak.YYYYMMDD-HHMMSS` and repository themes are merged into it. Existing extra files are not removed. A non-directory or symlink destination causes this step to fail safely. |
-| `~/.local/bin/theme-switch*` | Identical executable files are skipped. Different files are replaced through temporary files; no persistent backup is kept. |
+| `~/.local/bin/theme-switch*`, `~/.local/bin/wallpaper-switch` | Identical executable files are skipped. Different files are backed up and replaced through temporary files; source executable permissions are preserved. |
 | `~/.bashrc` and `~/.zshrc` | The exact line `export PATH="$HOME/.local/bin:$PATH"` is placed at the top and duplicate exact copies are removed. Existing files are backed up as `.bak.YYYYMMDD-HHMMSS`; missing files are created. |
 | btop integration | Existing `btop.conf` and `themes/current.theme` content is backed up as `.bak.<timestamp>` before setup changes it. Repeated identical backups are avoided. |
 | Neovim theme integration | `lua/plugins/theme.lua` may be created or replaced, and an obsolete exact `require("theme-loader")` line may be removed from `init.lua`. Changed existing files receive `.bak.<timestamp>` backups. |
@@ -380,13 +390,13 @@ up your own configuration.
 - Several Rofi shared color files import
   `/home/pear/.config/themes/current/color.rasi`. Users with another home path
   must replace that path before those styles can follow the active theme.
-- The installer always writes configuration under `~/.config`, while the two
-  theme commands honor `XDG_CONFIG_HOME`. A non-default `XDG_CONFIG_HOME` can
-  therefore make the commands look in a different directory from the
-  installer.
-- `hypr/hyprlock.conf` uses the hard-coded wallpaper path
-  `/home/pear/Pictures/Wallpaper/default.png` and targets monitor `eDP-1` for
-  its input and clock widgets. Adjust both for the target account and display.
+- The installer, wallpaper pickers, and `wallpaper-switch` use `~/.config`,
+  while the two theme commands honor `XDG_CONFIG_HOME`. A non-default
+  `XDG_CONFIG_HOME` can therefore make theme selection use a different
+  directory from wallpaper application and installation.
+- `hypr/hyprlock.conf` reads `~/.config/themes/current/default.png` and targets
+  monitor `eDP-1` for its input and clock widgets. Adjust the monitor for the
+  target display.
 - Hyprland requests the `Bibata-Modern-Ice` cursor and `qt5ct`, while the
   installer does not install those packages.
 - Hyprland autostart references

@@ -42,16 +42,6 @@ hl.window_rule({
 })
 
 hl.window_rule({
-	name = "float-tui",
-	match = { class = "^(custom_tui_floating)$" },
-	float = true,
-	center = true,
-	pin = true,
-	workspace = "unset",
-	size = "960 650",
-})
-
-hl.window_rule({
 	name = "imv-rule",
 	match = { class = "imv" },
 	float = true,
@@ -63,15 +53,7 @@ hl.window_rule({
 
 hl.window_rule({
 	name = "localsend-rule",
-	match = { class = "localsend" },
-	float = true,
-	center = true,
-	size = "960 650",
-})
-
-hl.window_rule({
-	name = "pavucontrol-rule",
-	match = { class = "org.pulseaudio.pavucontrol" },
+	match = { class = "^(org.localsend.localsend_app|org.pulseaudio.pavucontrol)" },
 	float = true,
 	center = true,
 	size = "960 650",
@@ -103,30 +85,6 @@ hl.window_rule({
 	opacity = "1.0 override",
 	no_blur = false,
 })
-
--- hl.window_rule({
--- 	name = "zen-swift",
--- 	match = { class = "zen"},
--- 	workspace = "1",
--- })
---
--- hl.window_rule({
--- 	name = "termial-workspace",
--- 	match = { class = "kitty"},
--- 	workspace = "2",
--- })
---
--- hl.window_rule({
--- 	name = "codium-swift",
--- 	match = { class = "codium"},
--- 	workspace = "3",
--- })
---
--- hl.window_rule({
--- 	name = "file-workspace",
--- 	match = { class = "org.gnome.Nautilus"},
--- 	workspace = "4",
--- })
 
 hl.layer_rule({ match = { namespace = "rofi" }, blur = true, ignore_alpha = 0 })
 hl.window_rule({ match = { class = "org.gnome.Calculator" }, float = true, center = true })

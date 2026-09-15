@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+
+tui="$1"
+
+if [[ -z "$tui" ]]; then
+  echo "Usage: $0 <tui-command>"
+  exit 1
+fi
+
+address=$(
+  hyprctl clients -j |
+    jq -r --arg class "$tui" \
+      '.[] | select(.class == $class) | .address' |
+    head -n1
+)
+
+if [[ -n "$address" ]]; then
+  hyprctl dispatch "hl.dsp.focus({ window = \"address:$address\" })"
+else
+  kitty --class "$tui" -e "$tui"
+fi
